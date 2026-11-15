@@ -30,6 +30,8 @@ func (s *Server) Router() http.Handler {
 
 	r.Get("/pocket-ask.js", s.core.AskWidget("jam"))
 	r.Get("/healthz", s.handleHealth)
+	r.Get("/app-signin", s.handleAppSignin)
+	r.Post("/app-signin", s.handleAppSigninAllow)
 	r.Get("/readyz", s.handleReady)
 	r.Get("/api/health", s.handleHealth)
 	if s.cfg.MetricsEnabled {
@@ -56,6 +58,7 @@ func (s *Server) Router() http.Handler {
 			r.Use(middleware.Timeout(120 * time.Second))
 			r.Post("/auth/login", s.handleLogin)
 			r.Post("/auth/setup", s.handleSetup)
+			r.Post("/auth/app/exchange", s.handleAppExchange)
 			r.Get("/auth/status", s.handleAuthStatus)
 			r.Get("/auth/oidc/start", s.handleOIDCStart)
 			r.Get("/auth/oidc/callback", s.handleOIDCCallback)
