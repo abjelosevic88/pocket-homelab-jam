@@ -24,6 +24,7 @@ export default function Home() {
   const tools = (
     <div className="tools">
       <button type="button" className="tool" onClick={() => navigate('/songs?add=1')}><span className="tool-ico rec"><Icon name="record" size={18} /></span><b>New song</b><span className="muted small">Record track by track</span></button>
+      <Link to="/ideas" className="tool"><span className="tool-ico"><Icon name="lightbulb" size={18} /></span><b>Ideas</b><span className="muted small">{h.idea_count ? `${h.idea_count} kept · record another` : 'A riff or a melody, before it’s gone'}</span></Link>
       <Link to="/tuner" className="tool"><span className="tool-ico"><Icon name="fork" size={18} /></span><b>Tuner</b><span className="muted small">Guitar, bass, ukulele, voice…</span></Link>
       <Link to="/metronome" className="tool"><span className="tool-ico"><Icon name="metronome" size={18} /></span><b>Metronome</b><span className="muted small">Tap, accents, subdivisions</span></Link>
     </div>

@@ -526,13 +526,13 @@ func (s *Store) TakesOn(ctx context.Context, uid int64, from, to string) ([]Take
 
 // AllMediaFiles lists every audio file a person has (export, cleanup).
 func (s *Store) AllMediaFiles(ctx context.Context, uid int64) ([]string, error) {
-	return s.strings(ctx, `SELECT file FROM takes WHERE user_id = ? UNION SELECT file FROM mixes WHERE user_id = ?`, uid, uid)
+	return s.strings(ctx, `SELECT file FROM takes WHERE user_id = ? UNION SELECT file FROM mixes WHERE user_id = ? UNION SELECT file FROM ideas WHERE user_id = ?`, uid, uid, uid)
 }
 
 // MediaInUse reports whether any row still points at a file.
 func (s *Store) MediaInUse(ctx context.Context, rel string) bool {
 	var n int
-	_ = s.DB.QueryRowContext(ctx, `SELECT (SELECT COUNT(1) FROM takes WHERE file = ?) + (SELECT COUNT(1) FROM mixes WHERE file = ?)`, rel, rel).Scan(&n)
+	_ = s.DB.QueryRowContext(ctx, `SELECT (SELECT COUNT(1) FROM takes WHERE file = ?) + (SELECT COUNT(1) FROM mixes WHERE file = ?) + (SELECT COUNT(1) FROM ideas WHERE file = ?)`, rel, rel, rel).Scan(&n)
 	return n > 0
 }
 

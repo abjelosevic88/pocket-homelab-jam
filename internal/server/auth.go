@@ -430,10 +430,12 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	files, _ := s.store.AllMediaFiles(r.Context(), id)
 	if err := s.store.DeleteUser(r.Context(), id); err != nil {
 		s.fail(w, err, "delete user")
 		return
 	}
+	s.dropMedia(r.Context(), files...) // takes, mixes and ideas: nothing points at them now
 	w.WriteHeader(http.StatusNoContent)
 }
 

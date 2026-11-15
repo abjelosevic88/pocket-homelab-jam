@@ -426,7 +426,7 @@ function About() {
   if (!data) return <Loading />
   const counts = (data.counts || {}) as Record<string, number>
   const core = (data.core || {}) as { configured?: boolean; registered?: boolean; url?: string; error?: string }
-  const tiles: [string, number | undefined, string][] = [['Songs', counts.songs, 'waveform'], ['Tracks', counts.tracks, 'layers'], ['Takes', counts.takes, 'mic'], ['Mixes', counts.mixes, 'mixer'], ['Sittings', counts.sittings, 'timer']]
+  const tiles: [string, number | undefined, string][] = [['Songs', counts.songs, 'waveform'], ['Tracks', counts.tracks, 'layers'], ['Takes', counts.takes, 'mic'], ['Mixes', counts.mixes, 'mixer'], ['Ideas', counts.ideas, 'lightbulb'], ['Sittings', counts.sittings, 'timer']]
   const rows: [string, React.ReactNode][] = [
     ['Version', <code key="v">{String(data.version)}</code>],
     ['Uptime', String(data.uptime)],

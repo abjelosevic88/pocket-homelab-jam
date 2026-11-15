@@ -158,6 +158,25 @@ type Mix struct {
 	CreatedAt  string `json:"created_at"`
 }
 
+// Idea is a quick recording on its own, not in a song yet.
+type Idea struct {
+	ID         int64  `json:"id"`
+	UserID     int64  `json:"-"`
+	ClientID   string `json:"client_id"`
+	Name       string `json:"name"`
+	File       string `json:"-"`
+	Mime       string `json:"mime"`
+	Size       int64  `json:"size"`
+	DurationMS int64  `json:"duration_ms"`
+	SampleRate int    `json:"sample_rate"`
+	Channels   int    `json:"channels"`
+	Peaks      string `json:"peaks"`
+	Source     string `json:"source"`
+	Device     string `json:"device"`
+	App        string `json:"-"` // the Pocket app that added it ("" = here)
+	CreatedAt  string `json:"created_at"`
+}
+
 // Sitting is time spent on one song in one go.
 type Sitting struct {
 	ID          int64  `json:"id"`

@@ -43,6 +43,7 @@
 - A **song** is a set of tracks with a tempo, a time signature and a key. Add a track for each instrument or voice — or bring one in from a file, from **Pocket Files** or from your **Pocket Music** library as a backing track.
 - **Record** on the armed track while the others play: a count-in, then the click on every beat (or not), recording from the start of the bar where the playhead is. The browser’s own voice filters are off (no noise suppression, no echo cancelling, no automatic volume), so an instrument sounds like itself. Recordings are kept sample-exact as WAV.
 - **Lined up by itself**: sound takes time to reach your headphones and to come back from the microphone. Measure it once per device (eight clicks through the speaker) and every new take is moved by exactly that. A take can still be nudged by 10 or 50 ms.
+- **Ideas**: a riff or a melody caught on its own, in the browser or from the phone, before there is a song for it — play them back, name them, and turn one into the first track of a new song when it grows.
 - **Every take is kept**: recording again adds take 2, 3…; pick the one that plays, mark the good ones, delete the rest.
 - **Mixer**: volume, balance, mute and solo per track, live while it plays. Hear yourself in the headphones if you like.
 - **Mix down** what you hear to one stereo WAV — download it or keep it in Pocket Files — or download all the tracks as a **.zip** with `song.json` (where each one starts) for Pocket Studio or any other recording app.

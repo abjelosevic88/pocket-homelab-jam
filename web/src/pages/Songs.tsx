@@ -76,6 +76,22 @@ function NewSong({ onClose }: { onClose: () => void }) {
   )
 }
 
+/** Tap the beat a few times: the tempo it makes (20..400). */
+export function useTapTempo(set: (bpm: number) => void) {
+  const taps = useRef<number[]>([])
+  return () => {
+    const now = performance.now()
+    taps.current = [...taps.current.filter(t => now - t < 2500), now].slice(-8)
+    if (taps.current.length >= 3) {
+      const gaps = taps.current.slice(1).map((t, i) => t - taps.current[i])
+      const avg = gaps.reduce((a, b) => a + b, 0) / gaps.length
+      set(Math.max(20, Math.min(400, Math.round(60000 / avg))))
+    }
+  }
+}
+
+export const METRES = ['2/4', '3/4', '4/4', '5/4', '6/8', '7/8', '9/8', '12/8']
+
 const KEYS = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'].flatMap(k => [k, `${k} minor`])
 
 /** The details of a song (new, or changing one). */
@@ -87,16 +103,7 @@ export function SongForm({ song, onSaved }: { song?: Song; onSaved: (s: Song) =>
     beats: song?.beats || settings?.beats || 4, beat_unit: song?.beat_unit || 4, count_in: song?.count_in ?? settings?.count_in ?? 1, click: song?.click ?? settings?.click ?? true,
   })
   const [busy, setBusy] = useState(false)
-  const taps = useRef<number[]>([])
-  const tap = () => {
-    const now = performance.now()
-    taps.current = [...taps.current.filter(t => now - t < 2500), now].slice(-8)
-    if (taps.current.length >= 3) {
-      const gaps = taps.current.slice(1).map((t, i) => t - taps.current[i])
-      const avg = gaps.reduce((a, b) => a + b, 0) / gaps.length
-      setF(x => ({ ...x, tempo: Math.max(20, Math.min(400, Math.round(60000 / avg))) }))
-    }
-  }
+  const tap = useTapTempo(bpm => setF(x => ({ ...x, tempo: bpm })))
   const save = async () => {
     setBusy(true)
     try { onSaved(song ? await api.put<Song>(`${V1}/songs/${song.id}`, f) : await api.post<Song>(`${V1}/songs`, f)) } catch (e) { toast(errMsg(e), 'err') } finally { setBusy(false) }
@@ -119,7 +126,7 @@ export function SongForm({ song, onSaved }: { song?: Song; onSaved: (s: Song) =>
       <div className="two-col tight">
         <Field label="Beats in a bar">
           <Select ariaLabel="Time signature" value={`${f.beats}/${f.beat_unit}`} onChange={v => { const [b, u] = v.split('/').map(Number); setF({ ...f, beats: b, beat_unit: u }) }}
-            options={['2/4', '3/4', '4/4', '5/4', '6/8', '7/8', '9/8', '12/8'].map(v => ({ value: v, label: v }))} />
+            options={METRES.map(v => ({ value: v, label: v }))} />
         </Field>
         <Field label="Count-in before recording"><Segmented size="sm" value={f.count_in} onChange={v => setF({ ...f, count_in: v })} options={[{ value: 0, label: 'None' }, { value: 1, label: '1 bar' }, { value: 2, label: '2 bars' }]} /></Field>
       </div>

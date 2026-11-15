@@ -35,7 +35,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		monthMin += d.Minutes
 	}
 	counts := s.store.CountsFor(ctx, uid)
-	writeJSON(w, http.StatusOK, map[string]any{"recent": recent, "starred": starred, "songs": total, "takes": counts["takes"], "mix_count": counts["mixes"], "mixes": mixes,
+	writeJSON(w, http.StatusOK, map[string]any{"recent": recent, "starred": starred, "songs": total, "takes": counts["takes"], "mix_count": counts["mixes"], "mixes": mixes, "idea_count": counts["ideas"],
 		"days": month, "today_minutes": todayMin, "week_minutes": weekMin, "week_takes": weekTakes, "month_minutes": monthMin, "streak": s.streak(ctx, uid)})
 }
 
@@ -92,6 +92,12 @@ func (s *Server) handleDay(w http.ResponseWriter, r *http.Request) {
 			items = append(items, map[string]any{"kind": "mix", "id": m.ID, "title": m.Name, "text": "Mixed " + m.Name, "time": localClock(m.CreatedAt), "url": s.link("/mixes")})
 		}
 	}
+	ideas, _ := s.store.ListIdeas(ctx, uid, 0)
+	for _, x := range ideas {
+		if x.CreatedAt >= from && x.CreatedAt < to {
+			items = append(items, map[string]any{"kind": "idea", "id": x.ID, "title": x.Name, "text": "Idea: " + x.Name + " (" + duration(x.DurationMS) + ")", "time": localClock(x.CreatedAt), "url": s.link("/ideas")})
+		}
+	}
 	takes, _ := s.store.TakesOn(ctx, uid, from, to)
 	writeJSON(w, http.StatusOK, map[string]any{"date": day, "items": items, "minutes": minutes, "takes": len(takes)})
 }
@@ -104,7 +110,7 @@ func localClock(iso string) string {
 	return t.In(time.Local).Format("15:04")
 }
 
-// handleSearch finds songs (title, artist, key, notes) and mixes.
+// handleSearch finds songs (title, artist, key, notes), mixes and ideas.
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	uid := actorID(ctx)
@@ -135,6 +141,15 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.Contains(strings.ToLower(m.Name+" "+m.SongTitle), low) {
 			hits = append(hits, map[string]any{"kind": "mix", "id": m.ID, "title": m.Name, "subtitle": "Mix · " + duration(m.DurationMS), "url": s.link("/mixes"), "path": "/mixes"})
+		}
+	}
+	ideas, _ := s.store.ListIdeas(ctx, uid, 0)
+	for _, x := range ideas {
+		if len(hits) >= lim*2 {
+			break
+		}
+		if strings.Contains(strings.ToLower(x.Name), low) {
+			hits = append(hits, map[string]any{"kind": "idea", "id": x.ID, "title": x.Name, "subtitle": "Idea · " + duration(x.DurationMS), "url": s.link("/ideas"), "path": "/ideas"})
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"hits": hits})

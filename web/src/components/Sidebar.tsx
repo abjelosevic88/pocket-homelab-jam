@@ -21,6 +21,7 @@ export function Sidebar({ onCreate, onNavigate }: { onCreate: () => void; onNavi
   const nav: { to: string; label: string; icon: string; active: boolean; count?: number | string }[] = [
     { to: '/', label: 'Home', icon: 'home', active: path === '/' },
     { to: '/songs', label: 'Songs', icon: 'waveform', active: path.startsWith('/songs'), count: home?.songs || undefined },
+    { to: '/ideas', label: 'Ideas', icon: 'lightbulb', active: path.startsWith('/ideas'), count: home?.idea_count || undefined },
     { to: '/mixes', label: 'Mixes', icon: 'mixer', active: path.startsWith('/mixes'), count: home?.mix_count || undefined },
     { to: '/tuner', label: 'Tuner', icon: 'fork', active: path.startsWith('/tuner') },
     { to: '/metronome', label: 'Metronome', icon: 'metronome', active: path.startsWith('/metronome') },

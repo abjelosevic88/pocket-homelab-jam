@@ -44,11 +44,16 @@ export interface Mix {
   files_path: string; files_url: string; created_at: string
 }
 
+export interface Idea {
+  id: number; client_id: string; name: string; mime: string; size: number; duration_ms: number; sample_rate: number; channels: number; peaks: string
+  source: string; device: string; created_at: string
+}
+
 export interface Sitting { id: number; song_id: number | null; title: string; day: string; started_at: string; last_at: string; seconds: number; takes: number; sent_to: string }
 export interface DayMinutes { day: string; minutes: number; takes: number }
 
 export interface Home {
-  recent: Song[]; starred: Song[]; songs: number; takes: number; mix_count: number; mixes: Mix[]; days: DayMinutes[]
+  recent: Song[]; starred: Song[]; songs: number; takes: number; mix_count: number; mixes: Mix[]; idea_count: number; days: DayMinutes[]
   today_minutes: number; week_minutes: number; week_takes: number; month_minutes: number; streak: number
 }
 

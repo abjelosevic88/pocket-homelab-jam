@@ -30,6 +30,20 @@ Everything is under `/api/v1`, JSON unless said otherwise. Sign in with the sess
 | `PUT /mixes/ID` · `DELETE /mixes/ID` | `{name}` |
 | `POST /mixes/ID/files` | Keep it in Pocket Files (the folder from settings) |
 
+## Ideas
+
+A quick recording on its own (a riff, a melody) before there is a song for it. An idea is `{id, client_id, name, mime, size, duration_ms, sample_rate, channels, peaks, source, device, created_at}`.
+
+| Call | What |
+|---|---|
+| `GET /ideas` | `{ideas}`, newest first |
+| `POST /ideas` | Multipart like a take: `meta` (JSON `{name, duration_ms, sample_rate, channels, peaks, source, device, client_id, created_at}`) + `file`. 201 with the idea. With a `client_id` this person already sent, 200 with that idea and the file is not kept (safe to send again). No `name`: "Idea" and the day; `created_at` (RFC 3339) is when it was recorded, else now |
+| `GET /ideas/ID` | The idea |
+| `GET /ideas/ID/audio` | The audio, with ranges (`?download=1` to save) |
+| `PUT /ideas/ID` | `{name}` |
+| `DELETE /ideas/ID` | 204; the file goes too |
+| `POST /ideas/ID/song` | `{title, tempo, beats, beat_unit, key_name, count_in, click, instrument}` (all optional: the idea's name, your settings, `other`). 201 with the new song like `GET /songs/ID`: one track with one take, the idea's recording from the start. The idea is gone after; nothing changes when it fails |
+
 ## Time spent
 
 | Call | What |
@@ -39,10 +53,10 @@ Everything is under `/api/v1`, JSON unless said otherwise. Sign in with the sess
 
 ## For the rest of the box
 
-`GET /home`, `GET /summary` (Homepage, Pocket AI), `GET /day/YYYY-MM-DD` (Pocket Day), `GET /search?q=` (Pocket Search: songs and mixes).
+`GET /home`, `GET /summary` (Homepage, Pocket AI), `GET /day/YYYY-MM-DD` (Pocket Day), `GET /search?q=` (Pocket Search: songs, mixes and ideas).
 
 ## Other
 
 `GET/PUT /settings`, `GET /apps` (how each connected app is reached), `GET /apps/files?space=&path=`, `GET /apps/files/raw?space=&path=`, `GET /apps/music?q=`, `GET /apps/music/stream/ID`, `GET /export.json` (`?audio=1`: a .zip with the audio), `GET /export.csv` (sittings), `POST /import` (.json or .zip), `GET /backup` (admin), users and tokens.
 
-Linked apps (Pocket Core) get `jam:read` (the GETs above, the audio too) and `jam:write` (`POST /songs`, `PUT/DELETE /songs/ID` for songs that app added).
+Linked apps (Pocket Core) get `jam:read` (the GETs above, the audio too) and `jam:write` (`POST /songs`, `PUT/DELETE /songs/ID` for songs that app added; `POST /ideas`, and `PUT/DELETE /ideas/ID`, `POST /ideas/ID/song` for ideas that app added).

@@ -17,8 +17,8 @@ import (
 // in linkRoutes stays closed to it (403).
 
 var linkOffers = []core.Offer{
-	{Scope: "jam:read", Name: "See your music recordings", Description: "Read your songs (titles, tempo, key, notes), their tracks and takes, your mixes and the time you spent playing and recording, and listen to them: for your journal, search and Pocket AI."},
-	{Scope: "jam:write", Name: "Add songs to record", Description: "Add a song or an idea to record (title, artist, tempo, key, notes). Changes or removes only the songs that app added; never your recordings."},
+	{Scope: "jam:read", Name: "See your music recordings", Description: "Read your songs (titles, tempo, key, notes), their tracks and takes, your ideas, your mixes and the time you spent playing and recording, and listen to them: for your journal, search and Pocket AI."},
+	{Scope: "jam:write", Name: "Add songs to record", Description: "Add a song or an idea to record (title, artist, tempo, key, notes), or an idea already recorded. Changes or removes only the songs and ideas that app added; never your other recordings."},
 }
 
 // linkRoute is one request a Pocket Core link token may make.
@@ -32,9 +32,12 @@ var linkRoutes = []linkRoute{
 	{"GET", regexp.MustCompile(`^/api/v1/auth/me$`), ""},
 	{"GET", regexp.MustCompile(`^/api/v1/(home|summary|search|songs|mixes|time|day/\d{4}-\d{2}-\d{2})$`), "jam:read"},
 	{"GET", regexp.MustCompile(`^/api/v1/songs/\d+$`), "jam:read"},
-	{"GET", regexp.MustCompile(`^/api/v1/(takes|mixes)/\d+/audio$`), "jam:read"},
+	{"GET", regexp.MustCompile(`^/api/v1/(takes|mixes|ideas)/\d+/audio$`), "jam:read"},
+	{"GET", regexp.MustCompile(`^/api/v1/ideas(/\d+)?$`), "jam:read"},
 	{"POST", regexp.MustCompile(`^/api/v1/songs$`), "jam:write"},
 	{"PUT DELETE", regexp.MustCompile(`^/api/v1/songs/\d+$`), "jam:write"},
+	{"POST", regexp.MustCompile(`^/api/v1/ideas(/\d+/song)?$`), "jam:write"},
+	{"PUT DELETE", regexp.MustCompile(`^/api/v1/ideas/\d+$`), "jam:write"},
 }
 
 var errLinkScope = errors.New("outside the link's scope")

@@ -8,7 +8,7 @@ import { Icon } from './icons'
 
 export interface PaletteCommand { id: string; label: string; icon: string; hint?: string; keywords?: string; run: () => void }
 
-interface Found { hits: { kind: 'song' | 'singer' | 'night'; id: number; title: string; subtitle: string; snippet?: string; path: string }[] }
+interface Found { hits: { kind: 'song' | 'singer' | 'night' | 'mix' | 'idea'; id: number; title: string; subtitle: string; snippet?: string; path: string }[] }
 
 export function CommandPalette({ onClose, commands }: { onClose: () => void; commands: PaletteCommand[] }) {
   const navigate = useNavigate()
@@ -32,7 +32,7 @@ export function CommandPalette({ onClose, commands }: { onClose: () => void; com
     const hit = (text: string) => words.every(w => text.toLowerCase().includes(w))
     const cmds = commands.filter(c => !n || hit(`${c.label} ${c.keywords || ''}`)).map(c => ({ key: c.id, group: 'Commands', icon: <Icon name={c.icon} size={16} />, label: c.label, hint: c.hint, run: c.run }))
     const f = n.length >= 2 ? found : null
-    const hits = (f?.hits || []).slice(0, 20).map((p, i) => ({ key: `r${i}`, group: p.kind === 'song' ? 'Songs' : p.kind === 'singer' ? 'Singers' : 'Nights', icon: <Icon name={p.kind === 'song' ? 'music' : p.kind === 'singer' ? 'user' : 'mic'} size={16} />, label: p.title, sub: p.snippet || p.subtitle || undefined, run: () => navigate(p.path) }))
+    const hits = (f?.hits || []).slice(0, 20).map((p, i) => ({ key: `r${i}`, group: p.kind === 'song' ? 'Songs' : p.kind === 'idea' ? 'Ideas' : p.kind === 'mix' ? 'Mixes' : p.kind === 'singer' ? 'Singers' : 'Nights', icon: <Icon name={p.kind === 'song' ? 'music' : p.kind === 'idea' ? 'lightbulb' : p.kind === 'mix' ? 'mixer' : p.kind === 'singer' ? 'user' : 'mic'} size={16} />, label: p.title, sub: p.snippet || p.subtitle || undefined, run: () => navigate(p.path) }))
     if (n) out.push(...hits, ...cmds)
     else out.push(...cmds)
     return out

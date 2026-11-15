@@ -422,6 +422,8 @@ type audioMeta struct {
 	Device     string `json:"device"`
 	Note       string `json:"note"`
 	Tracks     int    `json:"tracks"`
+	ClientID   string `json:"client_id"`  // ideas: the device's own id
+	CreatedAt  string `json:"created_at"` // ideas: when it was recorded
 }
 
 func (m *audioMeta) check() string {
@@ -457,6 +459,13 @@ func (m *audioMeta) check() string {
 
 // readAudioUpload reads a multipart upload: "meta" (JSON) and "file".
 func (s *Server) readAudioUpload(w http.ResponseWriter, r *http.Request, uid int64) (*audioMeta, string, string, int64, bool) {
+	return s.readAudioUploadUnless(w, r, uid, nil)
+}
+
+// readAudioUploadUnless is readAudioUpload, except that when skip says so
+// for the meta that came before the file, the file is not kept: it returns
+// the meta with no file name (and ok).
+func (s *Server) readAudioUploadUnless(w http.ResponseWriter, r *http.Request, uid int64, skip func(*audioMeta) bool) (*audioMeta, string, string, int64, bool) {
 	mr, err := r.MultipartReader()
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "send the audio as multipart/form-data (meta, file)")
@@ -490,6 +499,11 @@ func (s *Server) readAudioUpload(w http.ResponseWriter, r *http.Request, uid int
 		case "file":
 			if rel != "" {
 				continue
+			}
+			if meta != nil && skip != nil && skip(meta) {
+				_, _ = io.Copy(io.Discard, part)
+				part.Close()
+				return meta, "", "", 0, true
 			}
 			mime = part.Header.Get("Content-Type")
 			ext := strings.ToLower(filepath.Ext(part.FileName()))
