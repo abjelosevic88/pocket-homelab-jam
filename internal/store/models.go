@@ -53,6 +53,7 @@ type Settings struct {
 	ClickVolume int    `json:"click_volume"` // 0..100
 	Stereo      bool   `json:"stereo"`       // record two channels (a stereo interface)
 	Monitor     bool   `json:"monitor"`      // hear yourself in the headphones while recording
+	LevelTakes  bool   `json:"level_takes"`  // raise a quiet take to a normal level when it is kept
 	KeepAwake   bool   `json:"keep_awake"`   // keep the screen on while a song is open
 
 	// The tuner.

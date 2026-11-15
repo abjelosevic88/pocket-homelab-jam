@@ -16,7 +16,7 @@ var boxKeys = map[string]bool{"title": true, "setup_complete": true}
 func (s *Store) defaults() Settings {
 	return Settings{Title: DefaultTitle, DateFormat: "auto", TimeFormat: "auto", WeekStart: 1,
 		Tempo: 100, Beats: 4, CountIn: 1, Click: true,
-		ClickSound: "click", ClickVolume: 70, KeepAwake: true,
+		ClickSound: "click", ClickVolume: 70, KeepAwake: true, LevelTakes: true,
 		A4: 440, TunerPreset: "guitar",
 		PracticeTo: "off", FilesFolder: "Jam",
 		Conns: map[string]Conn{}}

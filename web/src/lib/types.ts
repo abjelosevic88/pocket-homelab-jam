@@ -13,7 +13,7 @@ export type Settings = ConnFields & {
   core_registered?: boolean
   title: string; date_format: string; time_format: string; week_start: number
   tempo: number; beats: number; count_in: number; click: boolean
-  click_sound: 'click' | 'wood' | 'beep'; click_volume: number; stereo: boolean; monitor: boolean; keep_awake: boolean
+  click_sound: 'click' | 'wood' | 'beep'; click_volume: number; stereo: boolean; monitor: boolean; keep_awake: boolean; level_takes: boolean
   a4: number; tuner_preset: string; practice_to: 'off' | 'guitar' | 'time'; files_folder: string
   setup_complete: boolean; base_url: string; demo: boolean
 }

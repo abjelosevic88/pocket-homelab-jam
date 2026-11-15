@@ -27,8 +27,12 @@ function ensureWorklet(ctx: AudioContext): Promise<void> {
   return workletReady
 }
 
-/** iOS: ask for a session that records and plays at once (Safari 16.4+). */
-function audioSession(type: 'play-and-record' | 'playback' | 'auto') {
+/**
+ * iOS (Safari 16.4+): "play-and-record" while the microphone is open — iOS
+ * then plays through the earpiece, quietly — and "playback" otherwise: the
+ * loudspeaker (or headphones), and heard even with the silent switch on.
+ */
+export function audioSession(type: 'play-and-record' | 'playback' | 'auto') {
   const s = (navigator as unknown as { audioSession?: { type: string } }).audioSession
   if (s) try { s.type = type } catch { /* older Safari */ }
 }
@@ -332,7 +336,7 @@ export class Mic {
   close() {
     this.stream.getTracks().forEach(t => t.stop())
     try { this.src.disconnect(); this.node.disconnect(); this.mon.disconnect(); this.sink.disconnect() } catch { /* gone */ }
-    audioSession('auto')
+    audioSession('playback')
   }
 }
 
@@ -356,6 +360,20 @@ export function placeTake(channels: Float32Array[], rate: number, firstSongTime:
   const out = channels.map(c => c.subarray(Math.min(cut, c.length)))
   const offset = start + cut / rate
   return { channels: out, rate, offsetMs: Math.round(offset * 1000), latencyMs: latency }
+}
+
+/**
+ * Raises a quiet take so its loudest moment is near full scale (at most 30 dB
+ * louder). Phones without automatic volume record a guitar across the room
+ * very softly. Returns the gain in dB (0 when nothing changed).
+ */
+export function levelTake(channels: Float32Array[], target = 0.89, maxGain = 31.6): number {
+  let peak = 0
+  for (const c of channels) for (let i = 0; i < c.length; i++) { const a = c[i] < 0 ? -c[i] : c[i]; if (a > peak) peak = a }
+  if (peak <= 0 || peak >= target * 0.7) return 0
+  const g = Math.min(maxGain, target / peak)
+  for (const c of channels) for (let i = 0; i < c.length; i++) c[i] *= g
+  return Math.round(20 * Math.log10(g))
 }
 
 // ---- measuring the delay ----

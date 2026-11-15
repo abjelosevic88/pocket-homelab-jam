@@ -169,6 +169,7 @@ function Recording() {
       </Section>
       <Section title="While recording" icon="mic">
         <SettingRow title="Hear yourself" help="Your microphone in the headphones as you record. With Bluetooth headphones the delay makes this hard to play with; wired ones are better."><Switch checked={f.monitor} onChange={v => setF({ ...f, monitor: v })} label="Hear yourself" /></SettingRow>
+        <SettingRow title="Make quiet takes louder" help="Raises a take so its loudest moment is near full volume (up to 30 dB). Phones record an instrument across the room very softly; switch it off with a sound card whose level you set yourself."><Switch checked={f.level_takes} onChange={v => setF({ ...f, level_takes: v })} label="Level takes" /></SettingRow>
         <SettingRow title="Record in stereo" help="Only with a stereo microphone or a sound card with two inputs; a phone records one."><Switch checked={f.stereo} onChange={v => setF({ ...f, stereo: v })} label="Stereo" /></SettingRow>
         <SettingRow title="Keep the screen on" help="While a song is open."><Switch checked={f.keep_awake} onChange={v => setF({ ...f, keep_awake: v })} label="Keep awake" /></SettingRow>
         {mics.length > 0 && <SettingRow title="Microphones here" help="The browser picks the one in use; change it in the system settings."><span className="muted small">{mics.map(m => m.label || 'Microphone').join(', ')}</span></SettingRow>}

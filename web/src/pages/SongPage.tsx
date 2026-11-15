@@ -7,7 +7,7 @@ import { api, V1 } from '../lib/api'
 import { useApp } from '../lib/app-context'
 import type { Instrument, Mix, Song, Take, Track } from '../lib/types'
 import {
-  Mic, Player, activeTake, audible, audioContext, barBeat, bufferChannels, cachedTake, clock, decode, encodeWav, latencyMs, loadTake, mixDown,
+  Mic, Player, activeTake, audible, audioContext, audioSession, barBeat, cachedTake, clock, encodeWav, latencyMs, levelTake, loadTake, mixDown,
   peaksOf, placeTake, rememberTake, uploadAudio,
 } from '../lib/engine'
 import { useCrumb, announceChange } from '../components/Layout'
@@ -94,6 +94,7 @@ export default function SongPage() {
 
   const play = () => {
     if (!song) return
+    audioSession('playback')
     const p = getPlayer()
     p.play(tracks, pos, opts())
     setPlaying(true)
@@ -147,9 +148,13 @@ export default function SongPage() {
     setPos(recFrom.current)
     p.seek(recFrom.current)
     const placed = placeTake(got.channels, got.rate, firstSong, recFrom.current, latencyMs(p.ctx, m.stream.getAudioTracks()[0]))
+    // the microphone closes after every take: while it is open, an iPhone plays through the earpiece
+    m.close()
+    mic.current = null
     const len = placed.channels[0]?.length || 0
     if (!target || len < got.rate * 0.3) { setRec('off'); toast('Too short to keep: record at least a moment after the count-in', 'err'); return }
     try {
+      const raised = settings?.level_takes !== false ? levelTake(placed.channels) : 0
       const wav = encodeWav(placed.channels, got.rate)
       const take = await uploadAudio(`${V1}/tracks/${target.id}/takes`, wav, 'take.wav', {
         duration_ms: Math.round(len / got.rate * 1000), offset_ms: placed.offsetMs, latency_ms: placed.latencyMs, sample_rate: got.rate, channels: placed.channels.length,
@@ -160,7 +165,7 @@ export default function SongPage() {
       rememberTake(take.id, buf)
       setReady(r => ({ ...r, [take.id]: true }))
       await load()
-      toast(`Take ${take.number} kept on ${target.name}`, 'ok', { label: 'Undo', run: async () => { await api.del(`${V1}/takes/${take.id}`).catch(() => {}); load() } })
+      toast(`Take ${take.number} kept on ${target.name}${raised ? ` (made ${raised} dB louder)` : ''}`, 'ok', { label: 'Undo', run: async () => { await api.del(`${V1}/takes/${take.id}`).catch(() => {}); load() } })
       announceChange()
     } catch (e) {
       toast(errMsg(e), 'err')

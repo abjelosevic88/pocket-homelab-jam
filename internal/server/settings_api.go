@@ -34,7 +34,7 @@ func (s *Server) publicSettings(ctx context.Context, u *store.User, st store.Set
 		"core_configured": s.core.Configured(), "core_registered": s.coreStatus()["registered"],
 		"title": st.Title, "date_format": st.DateFormat, "time_format": st.TimeFormat, "week_start": st.WeekStart,
 		"tempo": st.Tempo, "beats": st.Beats, "count_in": st.CountIn, "click": st.Click,
-		"click_sound": st.ClickSound, "click_volume": st.ClickVolume, "stereo": st.Stereo, "monitor": st.Monitor, "keep_awake": st.KeepAwake,
+		"click_sound": st.ClickSound, "click_volume": st.ClickVolume, "stereo": st.Stereo, "monitor": st.Monitor, "level_takes": st.LevelTakes, "keep_awake": st.KeepAwake,
 		"a4": st.A4, "tuner_preset": st.TunerPreset, "practice_to": st.PracticeTo, "files_folder": st.FilesFolder,
 		"setup_complete": st.SetupComplete, "base_url": s.cfg.BaseURL, "demo": s.cfg.DemoData,
 	}
@@ -146,7 +146,7 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 			cur.FilesFolder = "Jam"
 		}
 	}
-	for k, pair := range map[string][2]*bool{"click": {&cur.Click, &in.Click}, "stereo": {&cur.Stereo, &in.Stereo}, "monitor": {&cur.Monitor, &in.Monitor}, "keep_awake": {&cur.KeepAwake, &in.KeepAwake}} {
+	for k, pair := range map[string][2]*bool{"click": {&cur.Click, &in.Click}, "stereo": {&cur.Stereo, &in.Stereo}, "monitor": {&cur.Monitor, &in.Monitor}, "keep_awake": {&cur.KeepAwake, &in.KeepAwake}, "level_takes": {&cur.LevelTakes, &in.LevelTakes}} {
 		if keys[k] {
 			*pair[0] = *pair[1]
 		}
