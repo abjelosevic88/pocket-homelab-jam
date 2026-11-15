@@ -448,10 +448,10 @@ function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, on
           {recording && <span className="tp-meter"><span ref={meterRef} /></span>}
         </div>
         <div className="tp-btns">
-          <button type="button" className="tp-btn" onClick={onStart} disabled={rec !== 'off'} title="To the start (0)" aria-label="To the start"><Icon name="skip-back" size={20} /></button>
+          <button type="button" className="tp-btn" onClick={onStart} disabled={rec !== 'off'} title="To the start (0)" aria-label="To the start"><Icon name="skip-back" size={20} className="solid" /></button>
           {playing || recording
-            ? <button type="button" className="tp-btn main" onClick={onStop} title="Stop (space)" aria-label="Stop"><Icon name="square" size={20} /></button>
-            : <button type="button" className="tp-btn main" onClick={onPlay} disabled={rec !== 'off' || !ready} title={ready ? 'Play (space)' : 'Loading the takes…'} aria-label="Play">{ready ? <Icon name="play" size={22} /> : <Spinner size={18} />}</button>}
+            ? <button type="button" className="tp-btn tp-play" onClick={onStop} title="Stop (space)" aria-label="Stop"><Icon name="square" size={18} className="solid" /></button>
+            : <button type="button" className="tp-btn tp-play" onClick={onPlay} disabled={rec !== 'off' || !ready} title={ready ? 'Play (space)' : 'Loading the takes…'} aria-label="Play">{ready ? <Icon name="play" size={22} className="play" /> : <Spinner size={18} />}</button>}
           <button type="button" className={`tp-btn recbtn ${recording ? 'on' : ''}`} onClick={recording ? onStop : onRecord} disabled={rec === 'saving' || rec === 'opening' || (playing && !recording) || !ready} title="Record (R)" aria-label={recording ? 'Stop recording' : 'Record'}><Icon name="record" size={22} /></button>
           <button type="button" className={`tp-btn ${song.click ? 'lit' : ''}`} onClick={onClick} title={song.click ? 'Click on while recording (C)' : 'Click off (C) — the count-in still clicks'} aria-pressed={song.click} aria-label="Click"><Icon name="metronome" size={20} /></button>
         </div>

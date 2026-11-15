@@ -53,7 +53,7 @@ const songs = (await api(page, '/songs')).songs
 const riff = songs.find(s => s.title === 'Sunday Riff')
 await go(page, `/songs/${riff.id}`, 2600)
 assert.equal(await page.locator('.tl-row .take').count(), 4, 'four takes on the timeline')
-assert.ok(await page.locator('.tp-btn.main:not([disabled])').count() === 1, 'the takes load and play is ready')
+assert.ok(await page.locator('.tp-btn.tp-play:not([disabled])').count() === 1, 'the takes load and play is ready')
 await shot(page, 'desktop-song')
 await page.locator('.trk-name').nth(2).click()
 await page.waitForTimeout(700)

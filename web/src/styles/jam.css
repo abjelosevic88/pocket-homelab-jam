@@ -283,13 +283,13 @@ a.stat:hover { background: var(--hover); }
 .tp-btn { width: 44px; height: 44px; border-radius: 50%; border: 1px solid var(--border); background: var(--surface); color: var(--text); display: grid; place-items: center; cursor: pointer; padding: 0; transition: background .12s, border-color .12s; }
 .tp-btn:hover:not(:disabled) { background: var(--hover); }
 .tp-btn:disabled { opacity: .45; cursor: default; }
-.tp-btn.main { width: 54px; height: 54px; background: var(--accent); border-color: var(--accent); color: #fff; }
-.tp-btn.main:hover:not(:disabled) { background: var(--accent-hover); }
+.tp-btn.tp-play { width: 54px; height: 54px; background: var(--accent); border-color: var(--accent); color: #fff; }
+.tp-btn.tp-play:hover:not(:disabled) { background: var(--accent-hover); }
 .tp-btn.recbtn { color: #e5484d; }
 .tp-btn.recbtn.on { background: #e5484d; border-color: #e5484d; color: #fff; animation: rec-pulse 1.2s ease-in-out infinite; }
 @keyframes rec-pulse { 50% { box-shadow: 0 0 0 7px rgba(229, 72, 77, .18); } }
 .tp-btn.lit { background: var(--accent-soft); border-color: transparent; color: var(--accent-ink); }
-@media (max-width: 480px) { .tp-btn { width: 40px; height: 40px; } .tp-btn.main { width: 50px; height: 50px; } .tp-clock { font-size: 19px; } .transport { gap: 8px; padding: 8px 10px; } }
+@media (max-width: 480px) { .tp-btn { width: 40px; height: 40px; } .tp-btn.tp-play { width: 50px; height: 50px; } .tp-clock { font-size: 19px; } .transport { gap: 8px; padding: 8px 10px; } }
 .countin { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; font-size: min(42vw, 260px); font-weight: 800; color: color-mix(in srgb, #e5484d 75%, transparent); pointer-events: none; font-variant-numeric: tabular-nums; text-shadow: 0 6px 30px rgba(0,0,0,.18); }
 .countin[hidden] { display: none; }
 
@@ -368,3 +368,5 @@ a.stat:hover { background: var(--hover); }
 input[type=range] { accent-color: var(--accent); }
 .tuner.idle .tuner-note { color: var(--faint); }
 @media (max-width: 480px) { .strings { gap: 6px; } .string { min-width: 44px; padding: 7px 6px; } }
+.tp-btn.tp-play .icon path, .tp-btn .icon.solid path { fill: currentColor; }
+.tp-btn.tp-play .icon.play { transform: translateX(2px); }
