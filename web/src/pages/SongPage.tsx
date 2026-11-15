@@ -333,7 +333,7 @@ export default function SongPage() {
   )
 }
 
-function micError(e: unknown): string {
+export function micError(e: unknown): string {
   const n = (e as { name?: string })?.name
   if (n === 'NotAllowedError' || n === 'SecurityError') return 'The microphone is blocked: allow it for this site in the browser (on iPhone: Settings → Safari → Microphone), then try again'
   if (n === 'NotFoundError' || n === 'OverconstrainedError') return 'No microphone was found'

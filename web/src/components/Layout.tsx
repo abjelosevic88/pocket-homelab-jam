@@ -75,6 +75,7 @@ function Shell() {
         case 'n': e.preventDefault(); createRef.current(); break
         case 'h': go('/'); break
         case 's': go('/songs'); break
+        case 'i': go('/ideas'); break
         case 'm': go('/mixes'); break
         case 't': if (!/^\/(songs\/|metronome)/.test(loc.pathname)) go('/tuner'); break
         case 'k': go('/metronome'); break
@@ -91,6 +92,7 @@ function Shell() {
     { id: 'home', label: 'Home', icon: 'home', hint: 'H', run: () => navigate('/') },
     { id: 'songs', label: 'Songs', icon: 'waveform', hint: 'S', keywords: 'recordings tracks', run: () => navigate('/songs') },
     { id: 'starred', label: 'Starred songs', icon: 'star', run: () => navigate('/songs?filter=starred') },
+    { id: 'ideas', label: 'Ideas', icon: 'lightbulb', hint: 'I', keywords: 'riff melody hum sketch voice memo record', run: () => navigate('/ideas') },
     { id: 'mixes', label: 'Mixes', icon: 'mixer', hint: 'M', keywords: 'mixdown bounce export', run: () => navigate('/mixes') },
     { id: 'tuner', label: 'Tuner', icon: 'fork', hint: 'T', keywords: 'tune guitar bass ukulele violin pitch', run: () => navigate('/tuner') },
     { id: 'metronome', label: 'Metronome', icon: 'metronome', hint: 'K', keywords: 'click tempo bpm tap', run: () => navigate('/metronome') },
@@ -122,7 +124,7 @@ function Shell() {
 }
 
 const SECTION: Record<string, [string, string]> = {
-  '': ['Home', '/'], songs: ['Songs', '/songs'], mixes: ['Mixes', '/mixes'], tuner: ['Tuner', '/tuner'], metronome: ['Metronome', '/metronome'], time: ['Time spent', '/time'],
+  '': ['Home', '/'], songs: ['Songs', '/songs'], ideas: ['Ideas', '/ideas'], mixes: ['Mixes', '/mixes'], tuner: ['Tuner', '/tuner'], metronome: ['Metronome', '/metronome'], time: ['Time spent', '/time'],
 }
 
 function TopBar({ onMenu, onPalette, mobile, compact, sidebarOpen, crumb }: { onMenu: () => void; onPalette: () => void; mobile: boolean; compact: boolean; sidebarOpen: boolean; crumb: { t: string; to?: string } }) {

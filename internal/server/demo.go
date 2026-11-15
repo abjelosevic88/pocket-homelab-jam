@@ -14,8 +14,9 @@ import (
 
 // seedDemo fills the owner's account with songs that really play — drums,
 // bass, plucked guitar chords, keys and a sung-like melody, all made right
-// here — with a few takes each, a mix, and two months of time spent
-// (DEMO_DATA=true): for trying it out, CI and the screenshots.
+// here — with a few takes each, a mix, two ideas not in a song yet, and two
+// months of time spent (DEMO_DATA=true): for trying it out, CI and the
+// screenshots.
 func (s *Server) seedDemo(ctx context.Context, uid int64) error {
 	ctx = context.WithoutCancel(ctx)
 	if _, n, _ := s.store.ListSongs(ctx, uid, store.SongFilter{Limit: 1}); n > 0 {
@@ -146,6 +147,32 @@ func (s *Server) seedDemo(ctx context.Context, uid int64) error {
 		}
 		if d.daysAgo < 7 {
 			s.store.TouchSong(ctx, uid, so.ID, true)
+		}
+	}
+
+	// two ideas not in a song yet: a hummed hook and a riff
+	ideas := []struct {
+		name    string
+		daysAgo int
+		make    func() []float64
+	}{
+		{"Hook for the chorus", 1, func() []float64 {
+			return newSynth(84, 4, 2, am, 7).melody([]int{72, 74, 76, 79, 76, 74, 72, -1}, 1)
+		}},
+		{"Riff in D", 4, func() []float64 {
+			return newSynth(100, 4, 2, []chord{{50, []int{0, 3, 7}}, {53, []int{0, 4, 7}}}, 8).strum(2)
+		}},
+	}
+	for i, d := range ideas {
+		pcm := d.make()
+		rel, size, err := s.saveMedia(uid, ".wav", bytes.NewReader(wav(pcm, demoRate, 1)), maxAudioBytes)
+		if err != nil {
+			return err
+		}
+		x := &store.Idea{UserID: uid, Name: d.name, File: rel, Mime: "audio/wav", Size: size, DurationMS: int64(len(pcm)) * 1000 / demoRate, SampleRate: demoRate, Channels: 1,
+			Peaks: peaks(pcm, demoRate), Source: "recorded", Device: "iPhone microphone", CreatedAt: isoUTC(now.AddDate(0, 0, -d.daysAgo).Add(-time.Duration(2+i) * time.Hour))}
+		if err := s.store.CreateIdea(ctx, x); err != nil {
+			return err
 		}
 	}
 

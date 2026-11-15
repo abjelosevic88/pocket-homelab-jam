@@ -1,0 +1,374 @@
+// Ideas: quick recordings on their own — a riff, a melody — before there is
+// a song for them. Record one here (or on the phone), play it back, name it,
+// and make it the first track of a new song when it grows.
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { api, V1 } from '../lib/api'
+import { useApp } from '../lib/app-context'
+import type { Idea, Instrument, Song } from '../lib/types'
+import { useOnChange, announceChange } from '../lib/data'
+import { useCrumb } from '../components/Layout'
+import { Confirm, Empty, Field, Loading, MenuButton, Modal, Spinner, useToast, errMsg } from '../components/ui'
+import { Icon } from '../components/icons'
+import { Select } from '../components/Select'
+import { Mic, audioContext, audioSession, clock, encodeWav, levelTake, peaksBytes, peaksOf, uploadAudio } from '../lib/engine'
+import { fmtDateTime } from '../lib/format'
+import { INSTRUMENTS, micError } from './SongPage'
+import { METRES, useTapTempo } from './Songs'
+
+/** The one idea playing (starting another stops it). */
+let current: HTMLAudioElement | null = null
+function stopCurrent() { current?.pause() }
+
+export default function Ideas() {
+  const [list, setList] = useState<Idea[] | null>(null)
+  const [recording, setRecording] = useState(false)
+  const [toSong, setToSong] = useState<Idea | null>(null)
+  useCrumb(undefined)
+  const load = useCallback(() => { api.get<{ ideas: Idea[] }>(`${V1}/ideas`).then(r => setList(r.ideas)).catch(() => setList([])) }, [])
+  useEffect(() => { load() }, [load])
+  useOnChange(load)
+  useEffect(() => () => stopCurrent(), [])
+  const record = () => { stopCurrent(); setRecording(true) }
+  const recordBtn = <button type="button" className="btn primary" onClick={record} disabled={recording}><Icon name="record" size={15} />Record an idea</button>
+  return (
+    <div className="page">
+      {!!list?.length && <div className="toolbar"><span className="grow muted small">{list.length} {list.length === 1 ? 'idea' : 'ideas'}, newest first</span>{recordBtn}</div>}
+      {recording && <Recorder onClose={() => setRecording(false)} onKept={() => { load(); announceChange() }} />}
+      {!list ? <Loading /> : !list.length ? (
+        !recording && <Empty title="No ideas yet" icon="lightbulb">A riff, a melody, a few words to a tune: record it here or on the phone before it’s gone — no song, no click, just the microphone. When it grows, make it the first track of a new song.<div className="row mt" style={{ justifyContent: 'center' }}>{recordBtn}</div></Empty>
+      ) : <section className="card"><ul className="list">{list.map(x => <li key={x.id}><IdeaRow x={x} onChange={load} onSong={() => { stopCurrent(); setToSong(x) }} /></li>)}</ul></section>}
+      {toSong && <ToSong x={toSong} onClose={() => setToSong(null)} />}
+    </div>
+  )
+}
+
+// ---- recording ----
+
+type RecState = 'opening' | 'rolling' | 'saving' | 'failed'
+
+function clientId(): string {
+  const c = (globalThis.crypto as Crypto | undefined)
+  if (c?.randomUUID) return c.randomUUID()
+  return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+}
+
+/** The microphone straight to an idea: no click, no count-in, the browser's voice filters off. */
+function Recorder({ onClose, onKept }: { onClose: () => void; onKept: () => void }) {
+  const { settings } = useApp()
+  const { toast } = useToast()
+  const [state, setState] = useState<RecState>('opening')
+  const [pct, setPct] = useState(0)
+  const mic = useRef<Mic | null>(null)
+  const t0 = useRef(0)
+  const started = useRef(new Date())
+  const timeRef = useRef<HTMLSpanElement>(null)
+  const meterRef = useRef<HTMLSpanElement>(null)
+  const pending = useRef<{ wav: Blob; meta: Record<string, unknown>; raised: number } | null>(null)
+
+  useEffect(() => {
+    let gone = false
+    const ctx = audioContext()
+    const out = ctx.createGain()
+    out.connect(ctx.destination)
+    Mic.open(out, { stereo: !!settings?.stereo, monitor: false }).then(m => {
+      if (gone) { m.close(); return }
+      mic.current = m
+      m.start()
+      t0.current = ctx.currentTime
+      started.current = new Date()
+      setState('rolling')
+    }).catch(e => { if (!gone) { toast(micError(e), 'err'); onClose() } })
+    return () => { gone = true; mic.current?.close(); mic.current = null; out.disconnect() }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (state !== 'rolling') return
+    let raf = 0
+    const frame = () => {
+      const m = mic.current
+      if (m) {
+        if (timeRef.current) timeRef.current.textContent = clock(Math.max(0, m.ctx.currentTime - t0.current))
+        if (meterRef.current) meterRef.current.style.transform = `scaleX(${Math.min(1, Math.sqrt(m.level()))})`
+      }
+      raf = requestAnimationFrame(frame)
+    }
+    raf = requestAnimationFrame(frame)
+    return () => cancelAnimationFrame(raf)
+  }, [state])
+
+  const send = async () => {
+    const p = pending.current
+    if (!p) return
+    setState('saving')
+    setPct(0)
+    try {
+      const idea = await uploadAudio(`${V1}/ideas`, p.wav, 'idea.wav', p.meta, setPct) as Idea
+      pending.current = null
+      toast(`Kept “${idea.name}”${p.raised ? ` (made ${p.raised} dB louder)` : ''}`, 'ok')
+      onKept()
+      onClose()
+    } catch (e) {
+      toast(errMsg(e), 'err')
+      setState('failed')
+    }
+  }
+
+  const stop = async (keep: boolean) => {
+    const m = mic.current
+    if (!m || state !== 'rolling') return
+    setState('saving')
+    const got = await m.stop()
+    // the microphone closes right away: while it is open, an iPhone plays through the earpiece
+    m.close()
+    mic.current = null
+    if (!keep) { onClose(); return }
+    const len = got.channels[0]?.length || 0
+    if (len < got.rate * 0.3) { toast('Too short to keep: record at least a moment', 'err'); onClose(); return }
+    const raised = settings?.level_takes !== false ? levelTake(got.channels) : 0
+    pending.current = {
+      wav: encodeWav(got.channels, got.rate), raised,
+      meta: {
+        duration_ms: Math.round(len / got.rate * 1000), sample_rate: got.rate, channels: got.channels.length, peaks: peaksOf(got.channels, got.rate),
+        source: 'recorded', device: m.label, client_id: clientId(), created_at: started.current.toISOString(),
+      },
+    }
+    await send()
+  }
+
+  return (
+    <section className={`card idea-rec ${state === 'rolling' ? 'on' : ''}`} aria-live="polite">
+      <span className="idea-rec-dot" aria-hidden />
+      <div className="grow min0">
+        <div className="row" style={{ gap: 10 }}>
+          <span ref={timeRef} className="idea-rec-time">0:00.0</span>
+          <span className="muted small ellipsis">
+            {state === 'opening' ? 'Opening the microphone…' : state === 'rolling' ? 'Recording — play it, sing it' : state === 'saving' ? <><Spinner size={10} /> Keeping the idea… {pct > 0 && pct < 1 ? `${Math.round(pct * 100)}%` : ''}</> : 'It did not reach the server. The recording is still here.'}
+          </span>
+        </div>
+        <span className="idea-meter"><span ref={meterRef} /></span>
+      </div>
+      {state === 'failed' ? <>
+        <button type="button" className="btn ghost" onClick={() => { pending.current = null; onClose() }}>Discard</button>
+        <button type="button" className="btn primary" onClick={() => void send()}><Icon name="upload" size={15} />Send again</button>
+      </> : <>
+        <button type="button" className="btn ghost" onClick={() => void stop(false)} disabled={state !== 'rolling'}>Discard</button>
+        <button type="button" className="btn primary" onClick={() => void stop(true)} disabled={state !== 'rolling'}><Icon name="square" size={13} className="solid" />Stop and keep</button>
+      </>}
+    </section>
+  )
+}
+
+// ---- one idea ----
+
+function IdeaRow({ x, onChange, onSong }: { x: Idea; onChange: () => void; onSong: () => void }) {
+  const { toast } = useToast()
+  const audio = useRef<HTMLAudioElement | null>(null)
+  const [playing, setPlaying] = useState(false)
+  const [at, setAt] = useState<number | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState(x.name)
+  const [del, setDel] = useState(false)
+  useEffect(() => setName(x.name), [x.name])
+  useEffect(() => () => { const a = audio.current; if (a) { a.pause(); if (current === a) current = null } }, [])
+
+  const el = () => {
+    if (!audio.current) {
+      const a = new Audio(`${V1}/ideas/${x.id}/audio`)
+      a.preload = 'metadata'
+      a.onplay = () => { if (current && current !== a) current.pause(); current = a; setPlaying(true) }
+      a.onpause = () => { setPlaying(false); setAt(a.currentTime) }
+      a.onended = () => { setPlaying(false); setAt(null); a.currentTime = 0 }
+      audio.current = a
+    }
+    return audio.current
+  }
+  const toggle = () => {
+    const a = el()
+    if (playing) { a.pause(); return }
+    audioSession('playback')
+    a.play().catch(e => toast(errMsg(e), 'err'))
+  }
+  const seek = (sec: number) => {
+    const a = el()
+    a.currentTime = sec
+    setAt(sec)
+  }
+  const time = () => (playing && audio.current ? audio.current.currentTime : at)
+
+  const saveName = async () => {
+    setEditing(false)
+    const n = name.trim()
+    if (!n || n === x.name) { setName(x.name); return }
+    try { await api.put(`${V1}/ideas/${x.id}`, { name: n }); onChange() } catch (e) { setName(x.name); toast(errMsg(e), 'err') }
+  }
+
+  return (
+    <div className="list-row idea-row">
+      <button type="button" className={`play-btn ${playing ? 'on' : ''}`} onClick={toggle} aria-label={playing ? 'Pause' : 'Play'}><Icon name={playing ? 'pause' : 'play'} size={16} /></button>
+      <div className="grow min0">
+        <div className="row" style={{ gap: 8 }}>
+          {editing
+            ? <input className="idea-name-input" value={name} onChange={e => setName(e.target.value)} autoFocus aria-label="Name" maxLength={120}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void saveName() } else if (e.key === 'Escape') { e.preventDefault(); setName(x.name); setEditing(false) } }}
+                onBlur={() => void saveName()} />
+            : <button type="button" className="idea-name ellipsis" onClick={() => setEditing(true)} title="Rename">{x.name}</button>}
+        </div>
+        <div className="muted small">{fmtDateTime(x.created_at)} · {clock(x.duration_ms / 1000, false)}{x.device ? ` · ${x.device}` : ''}</div>
+        <BarWave peaks={x.peaks} durationMs={x.duration_ms} time={time} live={playing} onSeek={seek} />
+      </div>
+      <button type="button" className="btn hide-mobile" onClick={onSong} title="Make it the first track of a new song"><Icon name="plus" size={15} />Make a song</button>
+      <MenuButton label="Idea" align="right" width={220} items={() => [
+        { label: 'Make it a song', icon: 'waveform', onSelect: onSong },
+        { label: 'Rename', icon: 'edit', onSelect: () => setEditing(true) },
+        { label: 'Download', icon: 'download', onSelect: () => { window.location.href = `${V1}/ideas/${x.id}/audio?download=1` } },
+        'sep' as const,
+        { label: 'Delete', icon: 'trash', danger: true, onSelect: () => setDel(true) },
+      ]}><Icon name="more" size={16} /></MenuButton>
+      {del && <Confirm title={`Delete “${x.name}”?`} message="The recording is gone for good." confirmLabel="Delete" onCancel={() => setDel(false)}
+        onConfirm={async () => { setDel(false); audio.current?.pause(); try { await api.del(`${V1}/ideas/${x.id}`) } catch (e) { toast(errMsg(e), 'err') } announceChange(); onChange() }} />}
+    </div>
+  )
+}
+
+// ---- the waveform as rounded bars, with a playhead ----
+
+const BAR = 2.5 // bar width
+const STEP = 4 // one bar every 4 px
+
+/** Draws the peaks as separate rounded bars; `progress` 0..1 splits played (full colour) from the rest (dimmed), null = not started. */
+function drawBars(c: HTMLCanvasElement, p: Uint8Array, width: number, height: number, progress: number | null) {
+  const dpr = window.devicePixelRatio || 1
+  const cw = Math.round(width * dpr), ch = Math.round(height * dpr)
+  if (c.width !== cw) c.width = cw
+  if (c.height !== ch) c.height = ch
+  const g = c.getContext('2d')
+  if (!g) return
+  g.setTransform(dpr, 0, 0, dpr, 0, 0)
+  g.clearRect(0, 0, width, height)
+  const accent = getComputedStyle(c).getPropertyValue('--accent').trim() || '#e8590c'
+  const mid = height / 2
+  const n = Math.max(1, Math.floor((width - BAR) / STEP) + 1)
+  const played = progress === null ? width : progress * width
+  g.lineCap = 'round'
+  g.lineWidth = BAR
+  g.strokeStyle = accent
+  for (let i = 0; i < n; i++) {
+    const x = i * STEP + BAR / 2
+    let m = 0
+    if (p.length) {
+      const a = Math.floor(i * p.length / n)
+      const b = Math.max(a + 1, Math.floor((i + 1) * p.length / n))
+      for (let j = a; j < b && j < p.length; j++) if (p[j] > m) m = p[j]
+    }
+    const h = Math.sqrt(m / 255) * (mid - BAR / 2)
+    g.globalAlpha = x <= played ? 1 : 0.32
+    g.beginPath()
+    g.moveTo(x, mid - h)
+    g.lineTo(x, mid + h)
+    g.stroke()
+  }
+  g.globalAlpha = 1
+  if (progress !== null) {
+    const x = Math.max(0.75, Math.min(width - 0.75, progress * width))
+    g.save()
+    g.shadowColor = 'rgba(0, 0, 0, .45)'
+    g.shadowBlur = 2
+    g.fillStyle = '#fff'
+    g.fillRect(x - 0.75, 0, 1.5, height)
+    g.restore()
+  }
+}
+
+/** An idea's waveform: rounded bars, the playhead while it plays (redrawn every frame), "elapsed / total"; a click seeks. */
+function BarWave({ peaks, durationMs, time, live, onSeek, height = 36 }: { peaks: string; durationMs: number; time: () => number | null; live: boolean; onSeek?: (sec: number) => void; height?: number }) {
+  const wrap = useRef<HTMLDivElement>(null)
+  const canvas = useRef<HTMLCanvasElement>(null)
+  const label = useRef<HTMLSpanElement>(null)
+  const [w, setW] = useState(0)
+  const bytes = useMemo(() => peaksBytes(peaks), [peaks])
+  const total = durationMs / 1000
+  useLayoutEffect(() => {
+    const el = wrap.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setW(Math.max(40, Math.round(el.getBoundingClientRect().width))))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  useEffect(() => {
+    const c = canvas.current
+    if (!c || w <= 0) return
+    const draw = () => {
+      const t = time()
+      drawBars(c, bytes, w, height, t === null || total <= 0 ? null : Math.min(1, t / total))
+      if (label.current) label.current.textContent = `${clock(t ?? 0, false)} / ${clock(total, false)}`
+    }
+    draw()
+    if (!live) return
+    let raf = 0
+    const frame = () => { draw(); raf = requestAnimationFrame(frame) }
+    raf = requestAnimationFrame(frame)
+    return () => cancelAnimationFrame(raf)
+  }, [bytes, w, height, live, time, total])
+  const pick = (e: React.PointerEvent) => {
+    if (!onSeek || total <= 0) return
+    const r = e.currentTarget.getBoundingClientRect()
+    onSeek(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * total)
+  }
+  return (
+    <div className="idea-wave-row">
+      <div ref={wrap} className="idea-wave" style={{ height }} onPointerDown={pick} role="slider" aria-label="Position" aria-valuemin={0} aria-valuemax={Math.round(total)} aria-valuenow={Math.round(time() ?? 0)} tabIndex={-1}>
+        <canvas ref={canvas} style={{ width: w || '100%', height }} aria-hidden />
+      </div>
+      <span ref={label} className="idea-time small muted">0:00 / {clock(total, false)}</span>
+    </div>
+  )
+}
+
+// ---- an idea becomes a song ----
+
+function ToSong({ x, onClose }: { x: Idea; onClose: () => void }) {
+  const { settings } = useApp()
+  const { toast } = useToast()
+  const navigate = useNavigate()
+  const [f, setF] = useState({ title: x.name, instrument: 'other' as Instrument, tempo: settings?.tempo || 100, beats: settings?.beats || 4, beat_unit: 4 })
+  const [busy, setBusy] = useState(false)
+  const tap = useTapTempo(bpm => setF(v => ({ ...v, tempo: bpm })))
+  const save = async () => {
+    setBusy(true)
+    try {
+      const so = await api.post<Song>(`${V1}/ideas/${x.id}/song`, { ...f, title: f.title.trim() || x.name })
+      announceChange()
+      onClose()
+      navigate(`/songs/${so.id}`)
+    } catch (e) {
+      toast(errMsg(e), 'err')
+      setBusy(false)
+    }
+  }
+  return (
+    <Modal title="Make it a song" onClose={onClose} footer={<>
+      <button type="button" className="btn" onClick={onClose}>Cancel</button>
+      <button type="button" className="btn primary" disabled={busy} onClick={() => void save()}>{busy ? <Spinner size={12} /> : null}Make the song</button>
+    </>}>
+      <form className="stack" onSubmit={e => { e.preventDefault(); void save() }}>
+        <Field label="Name"><input value={f.title} onChange={e => setF({ ...f, title: e.target.value })} placeholder={x.name} autoFocus /></Field>
+        <div className="two-col tight">
+          <Field label="What is it?"><Select ariaLabel="Instrument" value={f.instrument} onChange={v => setF({ ...f, instrument: v as Instrument })} options={INSTRUMENTS.map(i => ({ value: i.value, label: i.label }))} /></Field>
+          <Field label="Tempo (beats a minute)">
+            <div className="row" style={{ gap: 6 }}>
+              <input type="number" min={20} max={400} step={1} value={f.tempo} onChange={e => setF({ ...f, tempo: Number(e.target.value) })} style={{ width: 90 }} />
+              <button type="button" className="btn" onClick={tap} title="Tap the beat a few times">Tap</button>
+            </div>
+          </Field>
+        </div>
+        <Field label="Beats in a bar">
+          <Select ariaLabel="Time signature" value={`${f.beats}/${f.beat_unit}`} onChange={v => { const [b, u] = v.split('/').map(Number); setF({ ...f, beats: b, beat_unit: u }) }}
+            options={METRES.map(v => ({ value: v, label: v }))} />
+        </Field>
+        <p className="muted small">The idea becomes the first track, from the very start of the song. Record the next ones on top of it; the idea leaves this list.</p>
+        <button type="submit" hidden />
+      </form>
+    </Modal>
+  )
+}

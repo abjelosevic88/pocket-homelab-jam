@@ -20,9 +20,9 @@ import (
 )
 
 // The export is everything a person made: songs with their tracks and takes,
-// mixes and the time spent. export.json has no audio; export.zip carries the
-// audio files too (audio/<file>). Importing either twice changes nothing;
-// takes and mixes come back only from the .zip.
+// mixes, ideas and the time spent. export.json has no audio; export.zip
+// carries the audio files too (audio/<file>). Importing either twice changes
+// nothing; takes, mixes and ideas come back only from the .zip.
 
 type exportDoc struct {
 	App        string          `json:"app"`
@@ -30,19 +30,25 @@ type exportDoc struct {
 	ExportedAt string          `json:"exported_at"`
 	Songs      []store.Song    `json:"songs"` // with tracks and takes
 	Mixes      []exportMix     `json:"mixes"`
+	Ideas      []exportIdea    `json:"ideas"`
 	Sittings   []store.Sitting `json:"sittings"`
 }
 
-// exportMix and exportTake carry the audio file's name inside the .zip.
+// exportMix and exportIdea carry the audio file's name inside the .zip.
 type exportMix struct {
 	store.Mix
+	Audio string `json:"audio"`
+}
+
+type exportIdea struct {
+	store.Idea
 	Audio string `json:"audio"`
 }
 
 func audioName(rel string) string { return "audio/" + path.Base(rel) }
 
 func (s *Server) export(ctx context.Context, u *store.User) (*exportDoc, error) {
-	doc := &exportDoc{App: "pocket-jam", Version: Version, ExportedAt: store.Now(), Songs: []store.Song{}, Mixes: []exportMix{}}
+	doc := &exportDoc{App: "pocket-jam", Version: Version, ExportedAt: store.Now(), Songs: []store.Song{}, Mixes: []exportMix{}, Ideas: []exportIdea{}}
 	list, _, err := s.store.ListSongs(ctx, u.ID, store.SongFilter{Sort: "added", Limit: 1000000})
 	if err != nil {
 		return nil, err
@@ -60,6 +66,13 @@ func (s *Server) export(ctx context.Context, u *store.User) (*exportDoc, error) 
 	}
 	for _, m := range mixes {
 		doc.Mixes = append(doc.Mixes, exportMix{Mix: m, Audio: audioName(m.File)})
+	}
+	ideas, err := s.store.ListIdeas(ctx, u.ID, 100000)
+	if err != nil {
+		return nil, err
+	}
+	for _, x := range ideas {
+		doc.Ideas = append(doc.Ideas, exportIdea{Idea: x, Audio: audioName(x.File)})
 	}
 	if doc.Sittings, err = s.store.ListSittings(ctx, u.ID, "0000-00-00", "9999-12-31"); err != nil {
 		return nil, err
@@ -128,6 +141,9 @@ func (s *Server) exportZip(w http.ResponseWriter, r *http.Request, doc *exportDo
 	}
 	for _, m := range doc.Mixes {
 		add(m.File)
+	}
+	for _, x := range doc.Ideas {
+		add(x.File)
 	}
 	_ = zw.Close()
 }
@@ -208,8 +224,8 @@ func songKey(title, created string) string {
 }
 
 // importDoc adds what is not here yet: songs by title and when they were
-// made, tracks by position, takes by number, mixes by name and time,
-// sittings by start and song.
+// made, tracks by position, takes by number, mixes by name and time, ideas
+// by client id (else name and time), sittings by start and song.
 func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, takeAudio map[string]string, zr *zip.Reader) (map[string]any, error) {
 	have, _, err := s.store.ListSongs(ctx, u.ID, store.SongFilter{Limit: 1000000})
 	if err != nil {
@@ -219,7 +235,7 @@ func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, t
 	for _, so := range have {
 		byKey[songKey(so.Title, so.CreatedAt)] = so.ID
 	}
-	added := map[string]int{"songs": 0, "tracks": 0, "takes": 0, "mixes": 0, "sittings": 0}
+	added := map[string]int{"songs": 0, "tracks": 0, "takes": 0, "mixes": 0, "ideas": 0, "sittings": 0}
 	songMap := map[int64]int64{}
 	readAudio := func(name, ext string) (string, int64, bool) {
 		if zr == nil || name == "" {
@@ -338,6 +354,33 @@ func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, t
 		}
 		added["mixes"]++
 	}
+	ideas, _ := s.store.ListIdeas(ctx, u.ID, 100000)
+	haveIdea := map[string]bool{}
+	for _, x := range ideas {
+		haveIdea[x.Name+"|"+x.CreatedAt] = true
+		if x.ClientID != "" {
+			haveIdea["client|"+x.ClientID] = true
+		}
+	}
+	for _, x := range doc.Ideas {
+		if haveIdea[x.Name+"|"+x.CreatedAt] || (x.ClientID != "" && haveIdea["client|"+x.ClientID]) {
+			continue
+		}
+		rel, size, ok := readAudio(x.Audio, "")
+		if !ok {
+			continue
+		}
+		nx := x.Idea
+		nx.ID, nx.UserID, nx.File, nx.Size, nx.App = 0, u.ID, rel, size, ""
+		if !oneOf(nx.Source, []string{"recorded", "upload", "files", "music"}) {
+			nx.Source = "recorded"
+		}
+		if err := s.store.CreateIdea(ctx, &nx); err != nil {
+			_ = os.Remove(s.mediaPath(rel))
+			return nil, err
+		}
+		added["ideas"]++
+	}
 	sits, _ := s.store.ListSittings(ctx, u.ID, "0000-00-00", "9999-12-31")
 	haveSit := map[string]bool{}
 	for _, x := range sits {
@@ -362,7 +405,7 @@ func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, t
 		added["sittings"]++
 	}
 	parts := []string{}
-	for _, k := range []string{"songs", "tracks", "takes", "mixes", "sittings"} {
+	for _, k := range []string{"songs", "tracks", "takes", "mixes", "ideas", "sittings"} {
 		if added[k] > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", added[k], k))
 		}

@@ -122,10 +122,10 @@ func (s *Store) Backup(ctx context.Context, dst string) error {
 }
 
 // Tables lists the tables counted for metrics / the About page.
-var Tables = []string{"songs", "tracks", "takes", "mixes", "sittings", "users", "api_tokens"}
+var Tables = []string{"songs", "tracks", "takes", "mixes", "ideas", "sittings", "users", "api_tokens"}
 
 // userTables are the content tables counted per user.
-var userTables = []string{"songs", "tracks", "takes", "mixes", "sittings", "api_tokens"}
+var userTables = []string{"songs", "tracks", "takes", "mixes", "ideas", "sittings", "api_tokens"}
 
 // CountsFor returns one user's row counts per content table (plus the number of accounts).
 func (s *Store) CountsFor(ctx context.Context, uid int64) map[string]int {

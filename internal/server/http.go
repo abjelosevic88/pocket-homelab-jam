@@ -47,6 +47,8 @@ func (s *Server) Router() http.Handler {
 			r.Post("/songs/{id}/mixes", s.handleCreateMix)
 			r.Get("/mixes/{id}/audio", s.handleMixAudio)
 			r.Get("/songs/{id}/stems.zip", s.handleStems)
+			r.Post("/ideas", s.handleCreateIdea)
+			r.Get("/ideas/{id}/audio", s.handleIdeaAudio)
 			r.Get("/apps/music/stream/{sid}", s.handleMusicStream)
 			r.Get("/apps/files/raw", s.handleFilesRaw)
 			r.Post("/mixes/{id}/files", s.handleMixToFiles)
@@ -92,6 +94,13 @@ func (s *Server) Router() http.Handler {
 				r.Get("/mixes", s.handleMixes)
 				r.Put("/mixes/{id}", s.handleUpdateMix)
 				r.Delete("/mixes/{id}", s.handleDeleteMix)
+
+				// ideas: recordings on their own, before there is a song
+				r.Get("/ideas", s.handleIdeas)
+				r.Get("/ideas/{id}", s.handleGetIdea)
+				r.Put("/ideas/{id}", s.handleUpdateIdea)
+				r.Delete("/ideas/{id}", s.handleDeleteIdea)
+				r.Post("/ideas/{id}/song", s.handleIdeaToSong)
 
 				// time spent
 				r.Get("/time", s.handleTime)

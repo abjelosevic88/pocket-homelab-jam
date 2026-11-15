@@ -1,7 +1,7 @@
 import { Modal } from './ui'
 
 const GROUPS: { title: string; keys: [string[], string][] }[] = [
-  { title: 'Go to', keys: [[['h'], 'Home'], [['s'], 'Songs'], [['m'], 'Mixes'], [['t'], 'Tuner'], [['k'], 'Metronome'], [[','], 'Settings']] },
+  { title: 'Go to', keys: [[['h'], 'Home'], [['s'], 'Songs'], [['i'], 'Ideas'], [['m'], 'Mixes'], [['t'], 'Tuner'], [['k'], 'Metronome'], [[','], 'Settings']] },
   { title: 'Make', keys: [[['n'], 'New song']] },
   { title: 'In a song', keys: [[['space'], 'Play or stop'], [['r'], 'Record or stop recording'], [['0'], 'To the start'], [['c'], 'Click on or off']] },
   { title: 'Metronome', keys: [[['space'], 'Start or stop'], [['↑ ↓'], 'Faster or slower'], [['t'], 'Tap the tempo']] },

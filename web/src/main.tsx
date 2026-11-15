@@ -14,6 +14,7 @@ import Home from './pages/Home'
 import Songs from './pages/Songs'
 import SongPage from './pages/SongPage'
 import Mixes from './pages/Mixes'
+import Ideas from './pages/Ideas'
 import Tuner from './pages/Tuner'
 import Metronome from './pages/Metronome'
 import Time from './pages/Time'
@@ -39,6 +40,7 @@ function App() {
         <Route path="/" element={<Home />} />
         <Route path="/songs" element={<Songs />} />
         <Route path="/songs/:id" element={<SongPage />} />
+        <Route path="/ideas" element={<Ideas />} />
         <Route path="/mixes" element={<Mixes />} />
         <Route path="/tuner" element={<Tuner />} />
         <Route path="/metronome" element={<Metronome />} />
