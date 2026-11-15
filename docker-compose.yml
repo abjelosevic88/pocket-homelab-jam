@@ -1,0 +1,22 @@
+# Pocket Jam (Go + SQLite) — record music track by track in the browser, with a click, a tuner and a metronome.
+services:
+  pocket-jam:
+    image: ghcr.io/abjelosevic88/pocket-homelab-jam:latest
+    container_name: pocket-jam
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      BASE_URL: ${BASE_URL:-http://localhost:8080}
+      # SECURE_COOKIES: "true"          # behind HTTPS (the microphone needs HTTPS anyway, except on localhost)
+      # First admin (only used while the database has no users):
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      # Pocket Core: one sign-in, and app links to Pocket Files, Music, Guitar and Time.
+      # CORE_URL: http://pocket-core:8080
+      # CORE_REGISTRATION_KEY: ${CORE_REGISTRATION_KEY}
+    volumes:
+      - ./data:/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

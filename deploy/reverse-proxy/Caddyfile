@@ -1,0 +1,9 @@
+# Pocket Jam behind Caddy.
+jam.example.com {
+	request_body {
+		max_size 2GB
+	}
+	reverse_proxy pocket-jam:8080 {
+		flush_interval -1
+	}
+}
