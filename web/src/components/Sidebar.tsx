@@ -20,6 +20,7 @@ export function Sidebar({ onCreate, onNavigate }: { onCreate: () => void; onNavi
   useEffect(() => { load() }, [load])
   useOnChange(load)
 
+  const bandColor = (id: number | null) => { const c = bands?.find(b => b.id === id)?.color; return c ? { color: c } : undefined }
   const title = settings?.title || status?.title || 'Pocket Jam'
   const path = loc.pathname
   const nav: { to: string; label: string; icon: string; active: boolean; count?: number | string }[] = [
@@ -66,18 +67,20 @@ export function Sidebar({ onCreate, onNavigate }: { onCreate: () => void; onNavi
       {!!home?.starred.length && <section className="sb-sec">
         <h4 className="sb-h"><Link to="/songs?filter=starred" onClick={onNavigate} className="sb-h-link">Starred</Link></h4>
         {home.starred.slice(0, 8).map(s => (
-          <button key={s.id} type="button" className={`sb-row sb-list ${path === `/songs/${s.id}` ? 'active' : ''}`} onClick={() => { onNavigate(); navigate(`/songs/${s.id}`) }} title={s.title}>
+          <button key={s.id} type="button" className={`sb-row sb-list ${path === `/songs/${s.id}` ? 'active' : ''}`} onClick={() => { onNavigate(); navigate(`/songs/${s.id}`) }} title={s.band_name ? `${s.title} — ${s.band_name}` : s.title}>
             <Icon name="star" size={15} className="sb-list-ico" />
             <span className="grow ellipsis">{s.title}</span>
+            {s.band_name && <span className="sb-band ellipsis" style={bandColor(s.band_id)}>{s.band_name}</span>}
           </button>
         ))}
       </section>}
       {!!home?.recent.length && <section className="sb-sec">
         <h4 className="sb-h">Played last</h4>
         {home.recent.filter(s => !s.starred).slice(0, 5).map(s => (
-          <button key={s.id} type="button" className={`sb-row sb-list ${path === `/songs/${s.id}` ? 'active' : ''}`} onClick={() => { onNavigate(); navigate(`/songs/${s.id}`) }} title={s.title}>
+          <button key={s.id} type="button" className={`sb-row sb-list ${path === `/songs/${s.id}` ? 'active' : ''}`} onClick={() => { onNavigate(); navigate(`/songs/${s.id}`) }} title={s.band_name ? `${s.title} — ${s.band_name}` : s.title}>
             <Icon name="waveform" size={15} className="sb-list-ico" />
             <span className="grow ellipsis">{s.title}</span>
+            {s.band_name && <span className="sb-band ellipsis" style={bandColor(s.band_id)}>{s.band_name}</span>}
           </button>
         ))}
       </section>}
