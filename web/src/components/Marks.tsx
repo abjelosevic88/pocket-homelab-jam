@@ -155,7 +155,7 @@ export function MarkEditor({ anchor, mark, draft, tracks, tempo, beats, onClose,
           <button type="submit" className="btn primary sm" disabled={bad || busy}>{mark ? 'Save' : 'Add the note'}</button>
           {atS !== null && <button type="button" className="btn ghost sm" onClick={() => { onPlay(atS); onClose() }} title="Play from here"><Icon name="play" size={13} />Play from here</button>}
           <span className="grow" />
-          {onDelete && <button type="button" className="btn ghost sm danger" onClick={onDelete} title="Delete the note"><Icon name="trash" size={14} />Delete</button>}
+          {onDelete && <button type="button" className="btn ghost sm danger-ghost mark-del-btn" onClick={onDelete} title="Delete the note"><Icon name="trash" size={14} />Delete</button>}
         </div>
       </form>
     </Popover>

@@ -472,3 +472,4 @@ input[type=range] { accent-color: var(--accent); }
   .tp-tempo { display: none; }
 }
 .tp-btn.sm.lit { color: var(--accent-ink); background: var(--accent-soft); }
+.mark-del-btn:hover { background: var(--danger-soft); }
