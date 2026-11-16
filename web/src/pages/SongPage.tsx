@@ -5,18 +5,19 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom'
 import { api, V1 } from '../lib/api'
 import { useApp } from '../lib/app-context'
-import type { Instrument, Mix, Song, Take, Track } from '../lib/types'
+import type { Instrument, Mark, Mix, Song, Take, Track } from '../lib/types'
 import {
   Mic, Player, activeTake, audible, audioContext, audioSession, barBeat, cachedTake, clock, encodeWav, latencyMs, levelTake, loadTake, mixDown,
   peaksOf, placeTake, rememberTake, uploadAudio,
 } from '../lib/engine'
 import { useCrumb, announceChange } from '../components/Layout'
-import { Confirm, Empty, Field, Loading, Modal, Segmented, Spinner, Switch, useIsMobile, useToast, errMsg, MenuButton, type MenuItem } from '../components/ui'
+import { Confirm, Empty, Field, Loading, Modal, Segmented, Spinner, Switch, useIsMobile, useToast, errMsg, MenuButton, ContextMenu, rectOf, type Anchor, type MenuItem } from '../components/ui'
 import { Icon } from '../components/icons'
 import { Select } from '../components/Select'
 import { Waveform } from '../components/Waveform'
 import { ImportSheet } from '../components/ImportSheet'
 import { SongForm } from './Songs'
+import { MarkEditor, MarkFlag, MarkList, holdToMenu, markColor } from '../components/Marks'
 import { ago, fmtBytes } from '../lib/format'
 
 export const INSTRUMENTS: { value: Instrument; label: string; icon: string; color: string }[] = [
@@ -59,6 +60,12 @@ export default function SongPage() {
   const mic = useRef<Mic | null>(null)
   const recFrom = useRef(0)
   const tracks = useMemo(() => song?.tracks || [], [song])
+  const marks = useMemo(() => song?.marks || [], [song])
+  const marksRef = useRef(marks)
+  marksRef.current = marks
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; at: number; track: Track | null } | null>(null)
+  const [markEdit, setMarkEdit] = useState<{ anchor: Anchor; mark?: Mark; draft: { at_ms: number; end_ms: number; track_id: number | null } } | null>(null)
+  const menuAt = useRef(0)
   const tracksRef = useRef(tracks)
   tracksRef.current = tracks
   useCrumb(song?.title)
@@ -97,6 +104,13 @@ export default function SongPage() {
     audioSession('playback')
     const p = getPlayer()
     p.play(tracks, pos, opts())
+    setPlaying(true)
+  }
+  const playFrom = (at: number) => {
+    if (!song || rec !== 'off' || !allReady) return
+    audioSession('playback')
+    getPlayer().play(tracks, at, opts())
+    setPos(at)
     setPlaying(true)
   }
   const stop = () => {
@@ -209,6 +223,7 @@ export default function SongPage() {
     else if (e.key === 'r') { e.preventDefault(); if (rec === 'rolling') stop(); else void record() }
     else if (e.key === 'Home' || e.key === '0') { e.preventDefault(); toStart() }
     else if (e.key === 'c' && song) { e.preventDefault(); saveSong({ click: !song.click }) }
+    else if (e.key === 'm' && song && !markEdit) { e.preventDefault(); noteAtPlayhead() }
   }
   useEffect(() => { const h = (e: KeyboardEvent) => keys.current(e); window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h) }, [])
 
@@ -218,6 +233,64 @@ export default function SongPage() {
     setSong({ ...song, ...patch })
     try { setSong(await api.put<Song>(`${V1}/songs/${song.id}`, patch)) } catch (e) { toast(errMsg(e), 'err'); load() }
   }
+  // ---- notes on the timeline ----
+  const sortMarks = (l: Mark[]) => [...l].sort((a, b) => a.at_ms - b.at_ms || a.id - b.id)
+  const openMenu = (x: number, y: number, at: number, track: Track | null) => {
+    if (Date.now() - menuAt.current < 800) return // a phone's own long-press menu and ours, once
+    menuAt.current = Date.now()
+    setCtxMenu({ x, y, at: Math.max(0, at), track })
+  }
+  const newMark = (anchor: Anchor, at: number, track: Track | null) => setMarkEdit({ anchor, draft: { at_ms: Math.round(at * 1000), end_ms: 0, track_id: track?.id ?? null } })
+  const noteAtPlayhead = () => {
+    const at = playing ? player.current?.position() ?? pos : pos
+    const el = document.querySelector('.tl .playhead')
+    const r = el ? rectOf(el) : { x: window.innerWidth / 2, y: 200, w: 0, h: 0 }
+    newMark({ x: r.x - 10, y: r.y, w: 20, h: 30 }, at, null)
+  }
+  const saveMark = async (v: { text: string; at_ms: number; end_ms: number; track_id: number | null; color: string }, m?: Mark): Promise<boolean> => {
+    if (!song) return false
+    try {
+      const body = { ...v, track_id: v.track_id ?? 0 }
+      const out = m ? await api.put<Mark>(`${V1}/marks/${m.id}`, body) : await api.post<Mark>(`${V1}/songs/${song.id}/marks`, body)
+      setSong(s => s && { ...s, marks: sortMarks([...(s.marks || []).filter(x => x.id !== out.id), out]) })
+      return true
+    } catch (e) { toast(errMsg(e), 'err'); return false }
+  }
+  const changeMark = async (m: Mark, patch: Partial<Mark>) => {
+    setSong(s => s && { ...s, marks: sortMarks((s.marks || []).map(x => x.id === m.id ? { ...x, ...patch } : x)) })
+    try { await api.put(`${V1}/marks/${m.id}`, patch) } catch (e) { toast(errMsg(e), 'err'); load() }
+  }
+  const deleteMark = async (m: Mark) => {
+    setSong(s => s && { ...s, marks: (s.marks || []).filter(x => x.id !== m.id) })
+    setMarkEdit(null)
+    try { await api.del(`${V1}/marks/${m.id}`) } catch (e) { toast(errMsg(e), 'err'); load() }
+  }
+  const openMark = (m: Mark, anchor: Anchor) => setMarkEdit({ anchor, mark: m, draft: { at_ms: m.at_ms, end_ms: m.end_ms, track_id: m.track_id } })
+  const colorOfMark = (m: Mark) => markColor(m, tracks, colorOf)
+  const laneEvents = (track: Track | null) => ({
+    onContextMenu: (e: React.MouseEvent<HTMLElement>) => {
+      if (e.shiftKey) return
+      e.preventDefault()
+      const r = e.currentTarget.getBoundingClientRect()
+      openMenu(e.clientX, e.clientY, (e.clientX - r.left) / px, track)
+    },
+    onHold: (e: React.PointerEvent<HTMLElement>) => {
+      const r = e.currentTarget.getBoundingClientRect()
+      holdToMenu(e, (x, y) => openMenu(x, y, (x - r.left) / px, track))
+    },
+  })
+  const ctxItems = (c: NonNullable<typeof ctxMenu>): MenuItem[] => {
+    const a = { x: c.x - 10, y: c.y - 6, w: 20, h: 12 }
+    const where = `${clock(c.at)} · bar ${barBeat(c.at, song!.tempo, song!.beats)}`
+    return [
+      { heading: where },
+      ...(c.track ? [{ label: `Add a note on ${c.track.name}`, icon: 'message', onSelect: () => newMark(a, c.at, c.track) }] : []),
+      { label: c.track ? 'Add a note for the whole song' : 'Add a note here', icon: 'flag', hint: c.track ? undefined : 'M', onSelect: () => newMark(a, c.at, null) },
+      'sep',
+      { label: 'Play from here', icon: 'play', disabled: rec !== 'off' || !allReady, onSelect: () => { if (playing) seek(c.at); else playFrom(c.at) } },
+    ]
+  }
+
   const saveTrack = async (t: Track, patch: Partial<Track>) => {
     setSong(s => s && { ...s, tracks: s.tracks!.map(x => x.id === t.id ? { ...x, ...patch } : x) })
     try { await api.put(`${V1}/tracks/${t.id}`, patch) } catch (e) { toast(errMsg(e), 'err'); load() }
@@ -272,6 +345,7 @@ export default function SongPage() {
         <div className="grow min0">
           <h2 className="studio-title ellipsis">{song.starred && <Icon name="star" size={16} className="star-on" />}{song.title}</h2>
           <div className="studio-meta">
+            {song.band_id && <button type="button" className="chip band-chip" onClick={() => navigate(`/songs?band=${song.band_id}`)} title="The band's songs"><Icon name="users" size={13} />{song.band_name}</button>}
             {song.artist && <span>{song.artist}</span>}
             <button type="button" className="chip" onClick={() => setEditing(true)} title="Tempo">{Math.round(song.tempo * 10) / 10} bpm</button>
             <button type="button" className="chip" onClick={() => setEditing(true)} title="Time signature">{song.beats}/{song.beat_unit}</button>
@@ -289,22 +363,29 @@ export default function SongPage() {
         </div>
         <div className="tl" ref={scroller}>
           <div className="tl-inner" style={{ width: headW + laneW }}>
-            <div className="tl-row tl-ruler-row">
+            <div className={`tl-row tl-ruler-row ${marks.some(m => !m.track_id) ? 'has-marks' : ''}`}>
               <div className="tl-head tl-ruler-head" style={{ width: headW }}>
                 <span className="muted small">{tracks.length} {tracks.length === 1 ? 'track' : 'tracks'}</span>
               </div>
-              <Ruler width={laneW} px={px} bar={bar} beats={song.beats} onSeek={seek} />
+              <Ruler width={laneW} px={px} bar={bar} beats={song.beats} onSeek={seek} {...laneEvents(null)}>
+                {marks.filter(m => !m.track_id).map(m => <MarkFlag key={m.id} m={m} px={px} color={colorOfMark(m)} onOpen={openMark} onChange={changeMark} />)}
+              </Ruler>
             </div>
             {tracks.map(t => (
               <TrackRow key={t.id} t={t} tracks={tracks} headW={headW} laneW={laneW} px={px} armed={armed === t.id} recording={rec === 'rolling' && armed === t.id}
                 loading={!!activeTake(t) && !ready[activeTake(t)!.id]} onArm={() => !busy && setArmed(armed === t.id ? null : t.id)} onOpen={() => setSheet(t.id)}
-                onMute={() => saveTrack(t, { muted: !t.muted })} onSolo={() => saveTrack(t, { solo: !t.solo })} onSeek={seek} />
+                onMute={() => saveTrack(t, { muted: !t.muted })} onSolo={() => saveTrack(t, { solo: !t.solo })} onSeek={seek} {...laneEvents(t)}>
+                {marks.filter(m => m.track_id === t.id).map(m => <MarkFlag key={m.id} m={m} px={px} color={colorOfMark(m)} onOpen={openMark} onChange={changeMark} />)}
+              </TrackRow>
             ))}
             <div className="tl-row">
               <div className="tl-head tl-add" style={{ width: headW }}>
                 <button type="button" className="btn ghost sm" onClick={() => setAdding({ intent: 'any' })} disabled={busy}><Icon name="plus" size={14} />Add a track</button>
               </div>
               <div className="lane lane-empty" style={{ width: laneW }} />
+            </div>
+            <div className="mark-guides" style={{ left: headW }} aria-hidden="true">
+              {marks.filter(m => !m.track_id).map(m => <div key={m.id} className={`mark-guide ${m.end_ms > m.at_ms ? 'stretch' : ''}`} style={{ left: m.at_ms / 1000 * px, width: m.end_ms > m.at_ms ? (m.end_ms - m.at_ms) / 1000 * px : undefined, ['--mk' as string]: colorOfMark(m) }} />)}
             </div>
             <Playhead player={player} playing={playing} rest={pos} px={px} headW={headW} rec={rec === 'rolling'} onLost={setLost} follow={followNow} />
           </div>
@@ -318,16 +399,24 @@ export default function SongPage() {
       </div>}
 
       <Transport song={song} player={player} playing={playing} rec={rec} armed={tracks.find(t => t.id === armed)} rest={pos} ready={allReady} recFrom={recFrom}
-        onPlay={play} onStop={stop} onRecord={record} onStart={toStart} onClick={() => saveSong({ click: !song.click })} mic={mic} />
+        onPlay={play} onStop={stop} onRecord={record} onStart={toStart} onClick={() => saveSong({ click: !song.click })} mic={mic} marks={marksRef} />
 
       <section className="card studio-notes">
         <div className="card-head"><h3>Notes</h3></div>
+        <div className="mark-sec">
+          <h4 className="muted small">On the timeline{marks.length ? ` · ${marks.length}` : ''}</h4>
+          <MarkList marks={marks} tracks={tracks} tempo={song.tempo} beats={song.beats} colorOf={colorOfMark} onSeek={seek} onOpen={openMark} />
+        </div>
         <NotesBox key={song.id} value={song.notes} onSave={v => saveSong({ notes: v })} />
       </section>
 
       {sheetTrack && <TrackSheet t={sheetTrack} song={song} onClose={() => setSheet(null)} onSave={p => saveTrack(sheetTrack, p)} onReload={load}
         onDeleted={() => { setSheet(null); load() }} ready={ready} onReady={kid => setReady(r => ({ ...r, [kid]: true }))} />}
       {adding && <AddTrack intent={adding.intent} onClose={() => setAdding(null)} onAdd={addTrack} songId={sid} onImported={async kid => { setReady(r => ({ ...r, [kid]: true })); await load(); announceChange() }} onRecord={() => { setAdding(null); setTimeout(() => void record(), 50) }} />}
+      {ctxMenu && <ContextMenu at={ctxMenu} items={ctxItems(ctxMenu)} onClose={() => setCtxMenu(null)} width={250} />}
+      {markEdit && <MarkEditor key={markEdit.mark?.id ?? 'new'} anchor={markEdit.anchor} mark={markEdit.mark} draft={markEdit.draft} tracks={tracks} tempo={song.tempo} beats={song.beats}
+        onClose={() => setMarkEdit(null)} onSave={v => saveMark(v, markEdit.mark)} onDelete={markEdit.mark ? () => deleteMark(markEdit.mark!) : undefined}
+        onPlay={sec => { if (playing) seek(sec); else playFrom(sec) }} />}
       {editing && <Modal title="Song details" onClose={() => setEditing(false)}><SongForm song={song} onSaved={s => { setSong(s); setEditing(false) }} /></Modal>}
       {mixing && <MixDown song={song} tracks={tracks} onClose={() => setMixing(false)} />}
       {delSong && <Confirm title={`Delete “${song.title}”?`} message="Its tracks and every take go too. Mixes you made stay (under Mixes)." confirmLabel="Delete" onCancel={() => setDelSong(false)}
@@ -345,7 +434,10 @@ export function micError(e: unknown): string {
 
 // ---- the timeline ----
 
-function Ruler({ width, px, bar, beats, onSeek }: { width: number; px: number; bar: number; beats: number; onSeek: (s: number) => void }) {
+function Ruler({ width, px, bar, beats, onSeek, onContextMenu, onHold, children }: {
+  width: number; px: number; bar: number; beats: number; onSeek: (s: number) => void
+  onContextMenu: (e: React.MouseEvent<HTMLElement>) => void; onHold: (e: React.PointerEvent<HTMLElement>) => void; children?: React.ReactNode
+}) {
   const marks = []
   const barPx = bar * px
   const every = Math.max(1, Math.ceil(56 / barPx))
@@ -356,12 +448,14 @@ function Ruler({ width, px, bar, beats, onSeek }: { width: number; px: number; b
     marks.push(<div key={i} className={`rl-bar ${label ? 'lab' : ''}`} style={{ left: x }}>{label && <span>{i + 1}</span>}</div>)
     if (barPx / beats > 10) for (let b = 1; b < beats; b++) marks.push(<div key={`${i}.${b}`} className="rl-beat" style={{ left: x + b * barPx / beats }} />)
   }
-  return <div className="ruler" style={{ width }} onPointerDown={e => { const r = e.currentTarget.getBoundingClientRect(); onSeek((e.clientX - r.left) / px) }}>{marks}</div>
+  return <div className="ruler" style={{ width }} onContextMenu={onContextMenu}
+    onPointerDown={e => { if (e.button !== 0) return; onHold(e); const r = e.currentTarget.getBoundingClientRect(); onSeek((e.clientX - r.left) / px) }}>{marks}{children}</div>
 }
 
-function TrackRow({ t, tracks, headW, laneW, px, armed, recording, loading, onArm, onOpen, onMute, onSolo, onSeek }: {
+function TrackRow({ t, tracks, headW, laneW, px, armed, recording, loading, onArm, onOpen, onMute, onSolo, onSeek, onContextMenu, onHold, children }: {
   t: Track; tracks: Track[]; headW: number; laneW: number; px: number; armed: boolean; recording: boolean; loading: boolean
   onArm: () => void; onOpen: () => void; onMute: () => void; onSolo: () => void; onSeek: (s: number) => void
+  onContextMenu: (e: React.MouseEvent<HTMLElement>) => void; onHold: (e: React.PointerEvent<HTMLElement>) => void; children?: React.ReactNode
 }) {
   const k = activeTake(t)
   const heard = audible(t, tracks)
@@ -379,12 +473,14 @@ function TrackRow({ t, tracks, headW, laneW, px, armed, recording, loading, onAr
           <button type="button" className={`trk-btn arm ${armed ? 'on' : ''}`} onClick={onArm} title={armed ? 'The next recording goes here' : 'Record on this track'} aria-pressed={armed}><Icon name="record" size={10} /></button>
         </div>
       </div>
-      <div className={`lane ${armed ? 'armed' : ''} ${recording ? 'recording' : ''}`} style={{ width: laneW }} onPointerDown={e => { if ((e.target as HTMLElement).closest('.take')) return; const r = e.currentTarget.getBoundingClientRect(); onSeek((e.clientX - r.left) / px) }}>
+      <div className={`lane ${armed ? 'armed' : ''} ${recording ? 'recording' : ''}`} style={{ width: laneW }} onContextMenu={onContextMenu}
+        onPointerDown={e => { if (e.button !== 0) return; onHold(e); if ((e.target as HTMLElement).closest('.take')) return; const r = e.currentTarget.getBoundingClientRect(); onSeek((e.clientX - r.left) / px) }}>
         {k && <div className="take" style={{ left: k.offset_ms / 1000 * px, width: Math.max(4, k.duration_ms / 1000 * px), ['--trk' as string]: color }} onClick={onOpen} title={`Take ${k.number}`}>
           <Waveform peaks={k.peaks} pxPerSec={px} width={Math.min(Math.max(4, Math.round(k.duration_ms / 1000 * px)), 16000)} height={46} color={color} />
           <span className="take-tag">{t.takes.length > 1 ? `take ${k.number}` : ''}{loading && <Spinner size={10} />}</span>
         </div>}
         {!k && !recording && <span className="lane-hint">{armed ? 'Press record' : 'Empty'}</span>}
+        {children}
       </div>
     </div>
   )
@@ -446,10 +542,12 @@ function Playhead({ player, playing, rest, px, headW, rec, onLost, follow }: {
 
 // ---- the transport ----
 
-function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, onPlay, onStop, onRecord, onStart, onClick, mic }: {
+function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, onPlay, onStop, onRecord, onStart, onClick, mic, marks }: {
   song: Song; player: React.RefObject<Player | null>; playing: boolean; rec: RecState; armed?: Track; rest: number; ready: boolean; recFrom: React.RefObject<number>
   onPlay: () => void; onStop: () => void; onRecord: () => void; onStart: () => void; onClick: () => void; mic: React.RefObject<Mic | null>
+  marks: React.RefObject<Mark[]>
 }) {
+  const noteRef = useRef<HTMLDivElement>(null)
   const clockRef = useRef<HTMLSpanElement>(null)
   const barRef = useRef<HTMLSpanElement>(null)
   const countRef = useRef<HTMLDivElement>(null)
@@ -463,6 +561,16 @@ function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, on
         const left = recFrom.current - s
         if (rec === 'rolling' && left > 0) { c.textContent = String(Math.ceil(left / (60 / song.tempo) - 1e-6)); c.hidden = false } else c.hidden = true
       }
+      // the note you're at: a stretch while it lasts, a moment for 4 seconds
+      const n = noteRef.current
+      if (n) {
+        const ms = s * 1000
+        let cur: Mark | undefined
+        for (const m of marks.current) if (m.text && m.at_ms <= ms && ms < (m.end_ms > m.at_ms ? m.end_ms : m.at_ms + 4000)) cur = m
+        const txt = cur ? cur.text.split('\n')[0] : ''
+        if (n.textContent !== txt) n.textContent = txt
+        n.hidden = !txt
+      }
     }
     if (!playing) { show(rest); return }
     let raf = 0
@@ -473,7 +581,7 @@ function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, on
     }
     raf = requestAnimationFrame(frame)
     return () => cancelAnimationFrame(raf)
-  }, [playing, rest, rec, song.tempo, song.beats, player, mic, recFrom])
+  }, [playing, rest, rec, song.tempo, song.beats, player, mic, recFrom, marks])
   const recording = rec === 'rolling'
   return (
     <>
@@ -484,6 +592,7 @@ function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, on
           <span className="tp-sub"><span ref={barRef}>1.1</span>{recording ? <span className="tp-rec">● REC {armed?.name}</span> : rec === 'saving' ? <span className="tp-rec saving"><Spinner size={10} /> Keeping the take…</span> : rec === 'opening' ? <span className="muted">Opening the microphone…</span> : armed ? <span className="muted ellipsis">Records on {armed.name}</span> : null}</span>
           {recording && <span className="tp-meter"><span ref={meterRef} /></span>}
         </div>
+        <div ref={noteRef} className="tp-note ellipsis" hidden aria-live="polite" />
         <div className="tp-btns">
           <button type="button" className="tp-btn" onClick={onStart} disabled={rec !== 'off'} title="To the start (0)" aria-label="To the start"><Icon name="skip-back" size={20} className="solid" /></button>
           {playing || recording

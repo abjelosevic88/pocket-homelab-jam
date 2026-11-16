@@ -389,3 +389,51 @@ input[type=range] { accent-color: var(--accent); }
 .idea-meter > span { display: block; height: 100%; background: linear-gradient(90deg, #2f9e44, #f59f00 80%, #e5484d); transform-origin: left; transform: scaleX(0); }
 @media (prefers-reduced-motion: reduce) { .idea-rec.on .idea-rec-dot { animation: none; } }
 .tl-follow { gap: 4px; font-size: 12px; }
+
+/* ---- notes on the timeline (marks) ---- */
+.tl { -webkit-touch-callout: none; }
+.tl-ruler-row.has-marks { min-height: 50px; }
+.tl-ruler-row.has-marks .ruler { height: 50px; }
+.mark { --mk: #7048e8; position: absolute; top: 0; bottom: 0; z-index: 3; pointer-events: none; }
+.mark::before { content: ''; position: absolute; left: -1px; top: 0; bottom: 0; width: 2px; background: var(--mk); opacity: .85; }
+.ruler .mark { top: 28px; }
+.mark-band { position: absolute; inset: 0; background: color-mix(in srgb, var(--mk) 16%, transparent); border-right: 2px solid color-mix(in srgb, var(--mk) 60%, transparent); }
+.ruler .mark-band { border-radius: 0 4px 4px 0; }
+.mark-flag { pointer-events: auto; touch-action: none; position: absolute; left: 0; top: 2px; max-width: 150px; height: 18px; display: flex; align-items: center; padding: 0 7px 0 6px;
+  border: 0; border-radius: 0 9px 9px 0; background: var(--mk); color: #fff; font: 600 11px/1 inherit; font-family: inherit; cursor: grab; box-shadow: 0 1px 3px rgba(0,0,0,.18); white-space: nowrap; }
+.mark-flag:hover { filter: brightness(1.08); }
+.mark-flag:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+.mark.dragging .mark-flag { cursor: grabbing; }
+.mark.dragging { opacity: .85; }
+.mark-end { pointer-events: auto; touch-action: none; position: absolute; right: -5px; top: 0; bottom: 0; width: 10px; cursor: ew-resize; }
+.mark-guides { position: absolute; top: 0; bottom: 0; right: 0; z-index: 1; pointer-events: none; }
+.mark-guide { --mk: #7048e8; position: absolute; top: 0; bottom: 0; border-left: 1px dashed color-mix(in srgb, var(--mk) 55%, transparent); }
+.mark-guide.stretch { background: color-mix(in srgb, var(--mk) 5%, transparent); }
+.mark-pop textarea { width: 100%; resize: vertical; min-height: 64px; font: inherit; line-height: 1.45; }
+.mark-when { display: flex; gap: 8px; align-items: flex-end; }
+.mark-pop form { padding: 12px; }
+.mark-when label { display: flex; flex-direction: column; gap: 3px; width: 92px; }
+.mark-when input { width: 100%; font-variant-numeric: tabular-nums; }
+.mark-when input.invalid { border-color: #e5484d; }
+.mark-bar { padding-bottom: 8px; white-space: nowrap; }
+.stack.tight { gap: 10px; }
+.swatches.sm .swatch { width: 22px; height: 22px; }
+.swatch.none { background: repeating-linear-gradient(45deg, var(--surface) 0 4px, var(--hover) 4px 8px); }
+.mark-sec { padding: 0 18px 4px; }
+.mark-sec h4 { margin: 0 0 6px; font-weight: 600; }
+.mark-empty { margin: 0 0 6px; }
+.mark-list { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.mark-list li { --mk: #7048e8; display: flex; align-items: flex-start; gap: 6px; border-left: 3px solid var(--mk); padding-left: 6px; }
+.mark-time { border: 0; background: none; font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--mk); font-weight: 650; padding: 4px 4px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+.mark-time:hover, .mark-text:hover { background: var(--hover); }
+.mark-text { flex: 1; min-width: 0; text-align: left; border: 0; background: none; font: inherit; font-size: 13.5px; color: inherit; padding: 4px 6px; border-radius: 6px; cursor: pointer; white-space: pre-wrap; line-height: 1.4; }
+.mark-trk { display: inline-block; font-size: 11px; font-weight: 650; color: var(--muted); background: var(--hover); border-radius: 5px; padding: 1px 6px; margin-right: 6px; }
+.tp-note { flex: 1 1 0; min-width: 0; text-align: center; font-size: 14px; font-weight: 650; color: #7048e8; padding: 0 10px; }
+[data-theme="dark"] .tp-note { color: #b197fc; }
+
+/* ---- bands ---- */
+.band-head { --band: var(--accent); display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.band-head h2 { margin: 0; font-size: 22px; }
+.band-dot { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: color-mix(in srgb, var(--band) 15%, var(--surface)); color: var(--band); flex-shrink: 0; }
+.band-tag { display: inline-block; font-size: 11px; font-weight: 650; color: var(--accent); background: var(--accent-soft); border-radius: 5px; padding: 0 6px; margin-right: 6px; }
+.band-chip { display: inline-flex; align-items: center; gap: 5px; }

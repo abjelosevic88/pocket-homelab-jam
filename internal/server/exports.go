@@ -28,7 +28,8 @@ type exportDoc struct {
 	App        string          `json:"app"`
 	Version    string          `json:"version"`
 	ExportedAt string          `json:"exported_at"`
-	Songs      []store.Song    `json:"songs"` // with tracks and takes
+	Bands      []store.Band    `json:"bands"`
+	Songs      []store.Song    `json:"songs"` // with tracks, takes and marks (notes on the timeline)
 	Mixes      []exportMix     `json:"mixes"`
 	Ideas      []exportIdea    `json:"ideas"`
 	Sittings   []store.Sitting `json:"sittings"`
@@ -48,7 +49,12 @@ type exportIdea struct {
 func audioName(rel string) string { return "audio/" + path.Base(rel) }
 
 func (s *Server) export(ctx context.Context, u *store.User) (*exportDoc, error) {
-	doc := &exportDoc{App: "pocket-jam", Version: Version, ExportedAt: store.Now(), Songs: []store.Song{}, Mixes: []exportMix{}, Ideas: []exportIdea{}}
+	doc := &exportDoc{App: "pocket-jam", Version: Version, ExportedAt: store.Now(), Bands: []store.Band{}, Songs: []store.Song{}, Mixes: []exportMix{}, Ideas: []exportIdea{}}
+	bands, err := s.store.ListBands(ctx, u.ID)
+	if err != nil {
+		return nil, err
+	}
+	doc.Bands = bands
 	list, _, err := s.store.ListSongs(ctx, u.ID, store.SongFilter{Sort: "added", Limit: 1000000})
 	if err != nil {
 		return nil, err
@@ -235,7 +241,21 @@ func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, t
 	for _, so := range have {
 		byKey[songKey(so.Title, so.CreatedAt)] = so.ID
 	}
-	added := map[string]int{"songs": 0, "tracks": 0, "takes": 0, "mixes": 0, "ideas": 0, "sittings": 0}
+	added := map[string]int{"bands": 0, "songs": 0, "tracks": 0, "takes": 0, "notes": 0, "mixes": 0, "ideas": 0, "sittings": 0}
+	for _, b := range doc.Bands {
+		name := cleanText(b.Name, maxName)
+		if name == "" || s.store.BandByName(ctx, u.ID, name) != nil {
+			continue
+		}
+		nb := &store.Band{UserID: u.ID, Name: name, Notes: clip(b.Notes, maxBandNotes)}
+		if reColor.MatchString(b.Color) {
+			nb.Color = b.Color
+		}
+		if err := s.store.CreateBand(ctx, nb); err != nil {
+			return nil, err
+		}
+		added["bands"]++
+	}
 	songMap := map[int64]int64{}
 	readAudio := func(name, ext string) (string, int64, bool) {
 		if zr == nil || name == "" {
@@ -253,7 +273,13 @@ func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, t
 		id, ok := byKey[songKey(in.Title, in.CreatedAt)]
 		if !ok {
 			so := in
-			so.ID, so.UserID, so.Source = 0, u.ID, ""
+			so.ID, so.UserID, so.Source, so.BandID = 0, u.ID, "", nil
+			if so.BandName != "" {
+				name := so.BandName
+				if band, _, m := s.bandFor(ctx, u.ID, nil, &name); m == "" {
+					so.BandID = band
+				}
+			}
 			if so.Title == "" {
 				continue
 			}
@@ -278,6 +304,7 @@ func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, t
 		if err != nil {
 			return nil, err
 		}
+		trackMap := map[int64]int64{}
 		for ti, t := range in.Tracks {
 			var tr *store.Track
 			if ti < len(cur.Tracks) {
@@ -295,6 +322,7 @@ func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, t
 				tr = &nt
 				added["tracks"]++
 			}
+			trackMap[t.ID] = tr.ID
 			numbers := map[int]bool{}
 			for _, k := range tr.Takes {
 				numbers[k.Number] = true
@@ -325,6 +353,43 @@ func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, t
 					_ = s.store.UpdateTrack(ctx, cur)
 				}
 			}
+		}
+		haveMark := map[string]bool{}
+		markKey := func(m store.Mark) string {
+			var t int64
+			if m.TrackID != nil {
+				t = *m.TrackID
+			}
+			return fmt.Sprintf("%d|%d|%s", t, m.AtMS, m.Text)
+		}
+		for _, m := range cur.Marks {
+			haveMark[markKey(m)] = true
+		}
+		for _, m := range in.Marks {
+			nm := m
+			nm.ID, nm.UserID, nm.SongID, nm.TrackID = 0, u.ID, id, nil
+			if m.TrackID != nil {
+				t, ok := trackMap[*m.TrackID]
+				if !ok {
+					continue
+				}
+				nm.TrackID = &t
+			}
+			nm.Text = strings.TrimSpace(clip(nm.Text, maxMarkText))
+			if !reColor.MatchString(nm.Color) {
+				nm.Color = ""
+			}
+			if nm.AtMS < 0 || nm.AtMS > maxLengthMS || haveMark[markKey(nm)] || len(haveMark) >= maxMarks {
+				continue
+			}
+			if nm.EndMS <= nm.AtMS || nm.EndMS > maxLengthMS {
+				nm.EndMS = 0
+			}
+			if err := s.store.CreateMark(ctx, &nm); err != nil {
+				return nil, err
+			}
+			haveMark[markKey(nm)] = true
+			added["notes"]++
 		}
 	}
 	mixes, _ := s.store.ListMixes(ctx, u.ID, 0, 100000)
@@ -405,7 +470,7 @@ func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, t
 		added["sittings"]++
 	}
 	parts := []string{}
-	for _, k := range []string{"songs", "tracks", "takes", "mixes", "ideas", "sittings"} {
+	for _, k := range []string{"bands", "songs", "tracks", "takes", "notes", "mixes", "ideas", "sittings"} {
 		if added[k] > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", added[k], k))
 		}

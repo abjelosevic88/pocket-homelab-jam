@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +44,8 @@ type songInput struct {
 	LoopEndMS   *int64   `json:"loop_end_ms"`
 	Starred     *bool    `json:"starred"`
 	Color       *string  `json:"color"`
+	BandID      *int64   `json:"band_id"`   // 0 = no band
+	BandName    *string  `json:"band_name"` // or by name, made when new ('' = no band)
 }
 
 // apply copies what was sent onto so and checks it; "" when fine.
@@ -108,12 +111,21 @@ func (in *songInput) apply(so *store.Song) string {
 func (s *Server) handleSongs(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	q := r.URL.Query()
-	list, total, err := s.store.ListSongs(ctx, actorID(ctx), store.SongFilter{Q: q.Get("q"), Starred: queryBool(r, "starred"), Sort: q.Get("sort"), Limit: queryInt(r, "limit"), Offset: queryInt(r, "offset")})
+	list, total, err := s.store.ListSongs(ctx, actorID(ctx), store.SongFilter{Q: q.Get("q"), Starred: queryBool(r, "starred"), Band: bandParam(q.Get("band")), Sort: q.Get("sort"), Limit: queryInt(r, "limit"), Offset: queryInt(r, "offset")})
 	if err != nil {
 		s.fail(w, err, "songs")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"songs": list, "total": total})
+}
+
+// bandParam reads ?band=<id> or ?band=none.
+func bandParam(v string) int64 {
+	if v == "none" {
+		return -1
+	}
+	n, _ := strconv.ParseInt(v, 10, 64)
+	return n
 }
 
 func (s *Server) handleCreateSong(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +141,12 @@ func (s *Server) handleCreateSong(w http.ResponseWriter, r *http.Request) {
 	if m := in.apply(so); m != "" {
 		writeErr(w, http.StatusBadRequest, m)
 		return
+	}
+	if band, set, m := s.bandFor(ctx, uid, in.BandID, in.BandName); m != "" {
+		writeErr(w, http.StatusBadRequest, m)
+		return
+	} else if set {
+		so.BandID = band
 	}
 	if err := s.store.CreateSong(ctx, so); err != nil {
 		s.fail(w, err, "save song")
@@ -177,6 +195,12 @@ func (s *Server) handleUpdateSong(w http.ResponseWriter, r *http.Request) {
 	if m := in.apply(so); m != "" {
 		writeErr(w, http.StatusBadRequest, m)
 		return
+	}
+	if band, set, m := s.bandFor(ctx, uid, in.BandID, in.BandName); m != "" {
+		writeErr(w, http.StatusBadRequest, m)
+		return
+	} else if set {
+		so.BandID = band
 	}
 	if err := s.store.UpdateSong(ctx, so); err != nil {
 		s.fail(w, err, "save song")

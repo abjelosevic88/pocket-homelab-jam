@@ -10,7 +10,7 @@ import (
 // ---- songs ----
 
 const songCols = `s.id, s.user_id, s.title, s.artist, s.notes, s.tempo, s.beats, s.beat_unit, s.key_name, s.count_in, s.click,
-	s.loop_start_ms, s.loop_end_ms, s.starred, s.color, s.source, s.opened_at, s.created_at, s.updated_at,
+	s.loop_start_ms, s.loop_end_ms, s.starred, s.color, s.source, s.band_id, COALESCE((SELECT b.name FROM bands b WHERE b.id = s.band_id), ''), s.opened_at, s.created_at, s.updated_at,
 	(SELECT COUNT(1) FROM tracks t WHERE t.song_id = s.id),
 	(SELECT COUNT(1) FROM takes k WHERE k.song_id = s.id),
 	COALESCE((SELECT MAX(k.offset_ms + k.duration_ms) FROM tracks t JOIN takes k ON k.id = t.take_id WHERE t.song_id = s.id), 0),
@@ -22,7 +22,7 @@ func scanSong(r scanner) (*Song, error) {
 	var so Song
 	var click, starred int
 	if err := r.Scan(&so.ID, &so.UserID, &so.Title, &so.Artist, &so.Notes, &so.Tempo, &so.Beats, &so.BeatUnit, &so.KeyName, &so.CountIn, &click,
-		&so.LoopStartMS, &so.LoopEndMS, &starred, &so.Color, &so.Source, &so.OpenedAt, &so.CreatedAt, &so.UpdatedAt,
+		&so.LoopStartMS, &so.LoopEndMS, &starred, &so.Color, &so.Source, &so.BandID, &so.BandName, &so.OpenedAt, &so.CreatedAt, &so.UpdatedAt,
 		&so.TrackCount, &so.TakeCount, &so.LengthMS, &so.Minutes); err != nil {
 		return nil, err
 	}
@@ -34,6 +34,7 @@ func scanSong(r scanner) (*Song, error) {
 type SongFilter struct {
 	Q       string
 	Starred bool
+	Band    int64  // 0 = any, -1 = songs in no band
 	Sort    string // recent | title | added | time
 	Limit   int
 	Offset  int
@@ -44,12 +45,19 @@ func (s *Store) ListSongs(ctx context.Context, uid int64, f SongFilter) ([]Song,
 	where := []string{"s.user_id = ?"}
 	args := []any{uid}
 	if q := strings.TrimSpace(f.Q); q != "" {
-		where = append(where, "(s.title LIKE ? OR s.artist LIKE ? OR s.notes LIKE ? OR s.key_name LIKE ?)")
+		where = append(where, `(s.title LIKE ? OR s.artist LIKE ? OR s.notes LIKE ? OR s.key_name LIKE ?
+			OR EXISTS (SELECT 1 FROM bands b WHERE b.id = s.band_id AND b.name LIKE ?) OR EXISTS (SELECT 1 FROM marks m WHERE m.song_id = s.id AND m.text LIKE ?))`)
 		like := "%" + q + "%"
-		args = append(args, like, like, like, like)
+		args = append(args, like, like, like, like, like, like)
 	}
 	if f.Starred {
 		where = append(where, "s.starred = 1")
+	}
+	if f.Band > 0 {
+		where = append(where, "s.band_id = ?")
+		args = append(args, f.Band)
+	} else if f.Band < 0 {
+		where = append(where, "s.band_id IS NULL")
 	}
 	w := strings.Join(where, " AND ")
 	var total int
@@ -115,14 +123,17 @@ func (s *Store) SongWithTracks(ctx context.Context, uid, id int64) (*Song, error
 		}
 	}
 	so.Tracks = tracks
+	if so.Marks, err = s.ListMarks(ctx, uid, id); err != nil {
+		return nil, err
+	}
 	return so, nil
 }
 
 // CreateSong adds a song.
 func (s *Store) CreateSong(ctx context.Context, so *Song) error {
-	res, err := s.DB.ExecContext(ctx, `INSERT INTO songs (user_id, title, artist, notes, tempo, beats, beat_unit, key_name, count_in, click, loop_start_ms, loop_end_ms, starred, color, source, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), strftime('%Y-%m-%dT%H:%M:%fZ','now')), strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
-		so.UserID, so.Title, so.Artist, so.Notes, so.Tempo, so.Beats, so.BeatUnit, so.KeyName, so.CountIn, boolInt(so.Click), so.LoopStartMS, so.LoopEndMS, boolInt(so.Starred), so.Color, so.Source, so.CreatedAt)
+	res, err := s.DB.ExecContext(ctx, `INSERT INTO songs (user_id, title, artist, notes, tempo, beats, beat_unit, key_name, count_in, click, loop_start_ms, loop_end_ms, starred, color, source, band_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), strftime('%Y-%m-%dT%H:%M:%fZ','now')), strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+		so.UserID, so.Title, so.Artist, so.Notes, so.Tempo, so.Beats, so.BeatUnit, so.KeyName, so.CountIn, boolInt(so.Click), so.LoopStartMS, so.LoopEndMS, boolInt(so.Starred), so.Color, so.Source, so.BandID, so.CreatedAt)
 	if err != nil {
 		return err
 	}
@@ -133,8 +144,8 @@ func (s *Store) CreateSong(ctx context.Context, so *Song) error {
 // UpdateSong saves a song's own fields.
 func (s *Store) UpdateSong(ctx context.Context, so *Song) error {
 	res, err := s.DB.ExecContext(ctx, `UPDATE songs SET title = ?, artist = ?, notes = ?, tempo = ?, beats = ?, beat_unit = ?, key_name = ?, count_in = ?, click = ?,
-		loop_start_ms = ?, loop_end_ms = ?, starred = ?, color = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE user_id = ? AND id = ?`,
-		so.Title, so.Artist, so.Notes, so.Tempo, so.Beats, so.BeatUnit, so.KeyName, so.CountIn, boolInt(so.Click), so.LoopStartMS, so.LoopEndMS, boolInt(so.Starred), so.Color, so.UserID, so.ID)
+		loop_start_ms = ?, loop_end_ms = ?, starred = ?, color = ?, band_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE user_id = ? AND id = ?`,
+		so.Title, so.Artist, so.Notes, so.Tempo, so.Beats, so.BeatUnit, so.KeyName, so.CountIn, boolInt(so.Click), so.LoopStartMS, so.LoopEndMS, boolInt(so.Starred), so.Color, so.BandID, so.UserID, so.ID)
 	return affected(res, err)
 }
 

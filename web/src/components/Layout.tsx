@@ -76,7 +76,7 @@ function Shell() {
         case 'h': go('/'); break
         case 's': go('/songs'); break
         case 'i': go('/ideas'); break
-        case 'm': go('/mixes'); break
+        case 'm': if (!/^\/songs\//.test(loc.pathname)) go('/mixes'); break // in a song, m pins a note
         case 't': if (!/^\/(songs\/|metronome)/.test(loc.pathname)) go('/tuner'); break
         case 'k': go('/metronome'); break
         case ',': go('/settings'); break
