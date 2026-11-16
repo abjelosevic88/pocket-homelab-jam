@@ -36,8 +36,15 @@ export interface Track {
 export interface Song {
   id: number; title: string; artist: string; notes: string; tempo: number; beats: number; beat_unit: number; key_name: string; count_in: number; click: boolean
   loop_start_ms: number; loop_end_ms: number; starred: boolean; color: string; source: string; opened_at: string | null; created_at: string; updated_at: string
-  track_count: number; take_count: number; length_ms: number; minutes: number; tracks?: Track[]
+  band_id: number | null; band_name: string
+  track_count: number; take_count: number; length_ms: number; minutes: number; tracks?: Track[]; marks?: Mark[]
 }
+
+/** A folder for songs (the band a song is for). */
+export interface Band { id: number; name: string; color: string; notes: string; created_at: string; songs: number; updated_at: string }
+
+/** A note pinned to a moment of a song (or a stretch, when end_ms > at_ms); on one track, or the whole song when track_id is null. */
+export interface Mark { id: number; song_id: number; track_id: number | null; at_ms: number; end_ms: number; text: string; color: string; created_at: string; updated_at: string }
 
 export interface Mix {
   id: number; song_id: number | null; song_title: string; name: string; mime: string; size: number; duration_ms: number; peaks: string; tracks: number

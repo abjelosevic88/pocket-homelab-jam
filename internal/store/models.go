@@ -86,6 +86,8 @@ type Song struct {
 	Starred     bool    `json:"starred"`
 	Color       string  `json:"color"`
 	Source      string  `json:"source"`
+	BandID      *int64  `json:"band_id"`
+	BandName    string  `json:"band_name"`
 	OpenedAt    *string `json:"opened_at"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
@@ -96,6 +98,34 @@ type Song struct {
 	LengthMS   int64   `json:"length_ms"`
 	Minutes    int     `json:"minutes"` // time spent on it
 	Tracks     []Track `json:"tracks,omitempty"`
+	Marks      []Mark  `json:"marks,omitempty"`
+}
+
+// Band is a folder for songs.
+type Band struct {
+	ID        int64  `json:"id"`
+	UserID    int64  `json:"-"`
+	Name      string `json:"name"`
+	Color     string `json:"color"`
+	Notes     string `json:"notes"`
+	CreatedAt string `json:"created_at"`
+	Songs     int    `json:"songs"`      // how many songs are in it
+	UpdatedAt string `json:"updated_at"` // its newest song's change ('' when empty)
+}
+
+// Mark is a note pinned to a moment (or a stretch) of a song, on the whole
+// song (TrackID nil) or on one track.
+type Mark struct {
+	ID        int64  `json:"id"`
+	UserID    int64  `json:"-"`
+	SongID    int64  `json:"song_id"`
+	TrackID   *int64 `json:"track_id"`
+	AtMS      int64  `json:"at_ms"`
+	EndMS     int64  `json:"end_ms"`
+	Text      string `json:"text"`
+	Color     string `json:"color"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // Track is one instrument or voice in a song.

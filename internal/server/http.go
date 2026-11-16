@@ -87,8 +87,18 @@ func (s *Server) Router() http.Handler {
 				r.Post("/songs/{id}/tracks", s.handleCreateTrack)
 				r.Put("/tracks/{id}", s.handleUpdateTrack)
 				r.Delete("/tracks/{id}", s.handleDeleteTrack)
+				r.Post("/songs/{id}/marks", s.handleCreateMark)
+				r.Put("/marks/{id}", s.handleUpdateMark)
+				r.Delete("/marks/{id}", s.handleDeleteMark)
 				r.Put("/takes/{id}", s.handleUpdateTake)
 				r.Delete("/takes/{id}", s.handleDeleteTake)
+
+				// bands: folders for songs
+				r.Get("/bands", s.handleBands)
+				r.Post("/bands", s.handleCreateBand)
+				r.Get("/bands/{id}", s.handleGetBand)
+				r.Put("/bands/{id}", s.handleUpdateBand)
+				r.Delete("/bands/{id}", s.handleDeleteBand)
 
 				// mixes
 				r.Get("/mixes", s.handleMixes)

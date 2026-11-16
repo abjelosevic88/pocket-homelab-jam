@@ -1,17 +1,21 @@
 // Left column: a new song, the sections, and the starred songs.
 import { useCallback, useEffect, useState } from 'react'
-import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { Link, NavLink, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { api, V1 } from '../lib/api'
 import { useApp } from '../lib/app-context'
-import { useOnChange } from '../lib/data'
+import { announceChange, useOnChange } from '../lib/data'
 import type { Home } from '../lib/types'
 import { Icon } from './icons'
+import { BandForm, useBands } from '../pages/Songs'
 
 export function Sidebar({ onCreate, onNavigate }: { onCreate: () => void; onNavigate: () => void }) {
   const { status, settings } = useApp()
   const navigate = useNavigate()
   const loc = useLocation()
   const [home, setHome] = useState<Home | null>(null)
+  const bands = useBands()
+  const [params] = useSearchParams()
+  const [newBand, setNewBand] = useState(false)
   const load = useCallback(() => { api.get<Home>(`${V1}/home`).then(setHome).catch(() => {}) }, [])
   useEffect(() => { load() }, [load])
   useOnChange(load)
@@ -20,7 +24,7 @@ export function Sidebar({ onCreate, onNavigate }: { onCreate: () => void; onNavi
   const path = loc.pathname
   const nav: { to: string; label: string; icon: string; active: boolean; count?: number | string }[] = [
     { to: '/', label: 'Home', icon: 'home', active: path === '/' },
-    { to: '/songs', label: 'Songs', icon: 'waveform', active: path.startsWith('/songs'), count: home?.songs || undefined },
+    { to: '/songs', label: 'Songs', icon: 'waveform', active: path.startsWith('/songs') && !(path === '/songs' && params.get('band')), count: home?.songs || undefined },
     { to: '/ideas', label: 'Ideas', icon: 'lightbulb', active: path.startsWith('/ideas'), count: home?.idea_count || undefined },
     { to: '/mixes', label: 'Mixes', icon: 'mixer', active: path.startsWith('/mixes'), count: home?.mix_count || undefined },
     { to: '/tuner', label: 'Tuner', icon: 'fork', active: path.startsWith('/tuner') },
@@ -47,6 +51,18 @@ export function Sidebar({ onCreate, onNavigate }: { onCreate: () => void; onNavi
         ))}
       </nav>
 
+      <section className="sb-sec">
+        <h4 className="sb-h"><span>Bands</span><button type="button" className="btn ghost icon-only xs" onClick={() => setNewBand(true)} title="New band" aria-label="New band"><Icon name="plus" size={14} /></button></h4>
+        {bands?.map(b => (
+          <button key={b.id} type="button" className={`sb-row sb-list ${path === '/songs' && params.get('band') === String(b.id) ? 'active' : ''}`} onClick={() => { onNavigate(); navigate(`/songs?band=${b.id}`) }} title={b.name}>
+            <span className="sb-list-ico" style={b.color ? { color: b.color } : undefined}><Icon name="users" size={15} /></span>
+            <span className="grow ellipsis">{b.name}</span>
+            {b.songs > 0 && <span className="sb-count">{b.songs}</span>}
+          </button>
+        ))}
+        {bands && !bands.length && <button type="button" className="sb-row sb-list muted" onClick={() => setNewBand(true)}><Icon name="plus" size={15} className="sb-list-ico" /><span className="grow ellipsis">Put songs in a band</span></button>}
+      </section>
+      {newBand && <BandForm onClose={() => setNewBand(false)} onSaved={b => { setNewBand(false); announceChange(); onNavigate(); navigate(`/songs?band=${b.id}`) }} />}
       {!!home?.starred.length && <section className="sb-sec">
         <h4 className="sb-h"><Link to="/songs?filter=starred" onClick={onNavigate} className="sb-h-link">Starred</Link></h4>
         {home.starred.slice(0, 8).map(s => (
