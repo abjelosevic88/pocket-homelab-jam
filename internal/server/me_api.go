@@ -92,7 +92,7 @@ func (s *Server) handleDay(w http.ResponseWriter, r *http.Request) {
 			items = append(items, map[string]any{"kind": "mix", "id": m.ID, "title": m.Name, "text": "Mixed " + m.Name, "time": localClock(m.CreatedAt), "url": s.link("/mixes")})
 		}
 	}
-	ideas, _ := s.store.ListIdeas(ctx, uid, 0)
+	ideas, _ := s.store.ListIdeas(ctx, uid, 0, 0)
 	for _, x := range ideas {
 		if x.CreatedAt >= from && x.CreatedAt < to {
 			items = append(items, map[string]any{"kind": "idea", "id": x.ID, "title": x.Name, "text": "Idea: " + x.Name + " (" + duration(x.DurationMS) + ")", "time": localClock(x.CreatedAt), "url": s.link("/ideas")})
@@ -143,7 +143,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			hits = append(hits, map[string]any{"kind": "mix", "id": m.ID, "title": m.Name, "subtitle": "Mix · " + duration(m.DurationMS), "url": s.link("/mixes"), "path": "/mixes"})
 		}
 	}
-	ideas, _ := s.store.ListIdeas(ctx, uid, 0)
+	ideas, _ := s.store.ListIdeas(ctx, uid, 0, 0)
 	for _, x := range ideas {
 		if len(hits) >= lim*2 {
 			break

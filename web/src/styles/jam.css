@@ -425,6 +425,7 @@ input[type=range] { accent-color: var(--accent); }
 .band-dot { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: color-mix(in srgb, var(--band) 15%, var(--surface)); color: var(--band); flex-shrink: 0; }
 .band-tag { display: inline-block; font-size: 11px; font-weight: 650; color: var(--accent); background: var(--accent-soft); border-radius: 5px; padding: 0 6px; margin-right: 6px; }
 .band-chip { display: inline-flex; align-items: center; gap: 5px; }
+.band-tag.tinted { color: var(--band); background: color-mix(in srgb, var(--band) 14%, transparent); }
 .mark-on { display: flex; flex-wrap: wrap; gap: 5px; }
 .mark-on-btn { border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; font-size: 12.5px; padding: 4px 10px; border-radius: 999px; cursor: pointer; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mark-on-btn:hover { background: var(--hover); }

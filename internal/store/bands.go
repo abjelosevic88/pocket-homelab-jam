@@ -4,15 +4,16 @@ import (
 	"context"
 )
 
-// ---- bands: folders for songs ----
+// ---- bands: folders for songs (and ideas) ----
 
 const bandCols = `b.id, b.user_id, b.name, b.color, b.notes, b.created_at,
 	(SELECT COUNT(1) FROM songs s WHERE s.band_id = b.id),
+	(SELECT COUNT(1) FROM ideas i WHERE i.band_id = b.id),
 	COALESCE((SELECT MAX(COALESCE(s.opened_at, s.updated_at)) FROM songs s WHERE s.band_id = b.id), '')`
 
 func scanBand(r scanner) (*Band, error) {
 	var b Band
-	if err := r.Scan(&b.ID, &b.UserID, &b.Name, &b.Color, &b.Notes, &b.CreatedAt, &b.Songs, &b.UpdatedAt); err != nil {
+	if err := r.Scan(&b.ID, &b.UserID, &b.Name, &b.Color, &b.Notes, &b.CreatedAt, &b.Songs, &b.Ideas, &b.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return &b, nil
@@ -67,9 +68,12 @@ func (s *Store) UpdateBand(ctx context.Context, b *Band) error {
 	return affected(res, err)
 }
 
-// DeleteBand removes a band; its songs stay, in no band.
+// DeleteBand removes a band; its songs and ideas stay, in no band.
 func (s *Store) DeleteBand(ctx context.Context, uid, id int64) error {
 	if _, err := s.DB.ExecContext(ctx, `UPDATE songs SET band_id = NULL WHERE user_id = ? AND band_id = ?`, uid, id); err != nil {
+		return err
+	}
+	if _, err := s.DB.ExecContext(ctx, `UPDATE ideas SET band_id = NULL WHERE user_id = ? AND band_id = ?`, uid, id); err != nil {
 		return err
 	}
 	res, err := s.DB.ExecContext(ctx, `DELETE FROM bands WHERE user_id = ? AND id = ?`, uid, id)

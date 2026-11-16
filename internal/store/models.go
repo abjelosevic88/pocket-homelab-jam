@@ -110,6 +110,7 @@ type Band struct {
 	Notes     string `json:"notes"`
 	CreatedAt string `json:"created_at"`
 	Songs     int    `json:"songs"`      // how many songs are in it
+	Ideas     int    `json:"ideas"`      // how many ideas are in it
 	UpdatedAt string `json:"updated_at"` // its newest song's change ('' when empty)
 }
 
@@ -204,6 +205,8 @@ type Idea struct {
 	Source     string `json:"source"`
 	Device     string `json:"device"`
 	App        string `json:"-"` // the Pocket app that added it ("" = here)
+	BandID     *int64 `json:"band_id"`
+	BandName   string `json:"band_name"`
 	CreatedAt  string `json:"created_at"`
 }
 

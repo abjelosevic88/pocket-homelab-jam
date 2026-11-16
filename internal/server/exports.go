@@ -73,7 +73,7 @@ func (s *Server) export(ctx context.Context, u *store.User) (*exportDoc, error) 
 	for _, m := range mixes {
 		doc.Mixes = append(doc.Mixes, exportMix{Mix: m, Audio: audioName(m.File)})
 	}
-	ideas, err := s.store.ListIdeas(ctx, u.ID, 100000)
+	ideas, err := s.store.ListIdeas(ctx, u.ID, 0, 100000)
 	if err != nil {
 		return nil, err
 	}
@@ -419,7 +419,7 @@ func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, t
 		}
 		added["mixes"]++
 	}
-	ideas, _ := s.store.ListIdeas(ctx, u.ID, 100000)
+	ideas, _ := s.store.ListIdeas(ctx, u.ID, 0, 100000)
 	haveIdea := map[string]bool{}
 	for _, x := range ideas {
 		haveIdea[x.Name+"|"+x.CreatedAt] = true
@@ -436,7 +436,13 @@ func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, t
 			continue
 		}
 		nx := x.Idea
-		nx.ID, nx.UserID, nx.File, nx.Size, nx.App = 0, u.ID, rel, size, ""
+		nx.ID, nx.UserID, nx.File, nx.Size, nx.App, nx.BandID = 0, u.ID, rel, size, "", nil
+		if nx.BandName != "" {
+			name := nx.BandName
+			if band, _, m := s.bandFor(ctx, u.ID, nil, &name); m == "" {
+				nx.BandID = band
+			}
+		}
 		if !oneOf(nx.Source, []string{"recorded", "upload", "files", "music"}) {
 			nx.Source = "recorded"
 		}

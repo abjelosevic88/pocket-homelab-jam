@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -201,11 +202,15 @@ func decode(r *http.Request, v any) error {
 }
 
 // decodeKeys decodes JSON into v and also reports which top-level keys were
-// present, so PUT handlers can tell "not sent" from "sent empty".
+// present, so PUT handlers can tell "not sent" from "sent empty" (or null).
+// An empty body is io.EOF, as with decode.
 func decodeKeys(r *http.Request, v any) (map[string]bool, error) {
 	b, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, 32<<20))
 	if err != nil {
 		return nil, err
+	}
+	if len(bytes.TrimSpace(b)) == 0 {
+		return map[string]bool{}, io.EOF
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {

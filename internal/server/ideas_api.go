@@ -23,9 +23,16 @@ const maxClientID = 200
 // isoUTC is a time as stored: UTC, milliseconds, like the database's own default.
 func isoUTC(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
 
+// handleIdeas lists ideas; ?band=<id> one band's, ?band=none (or 0) the ones
+// in no band.
 func (s *Server) handleIdeas(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	list, err := s.store.ListIdeas(ctx, actorID(ctx), queryInt(r, "limit"))
+	v := r.URL.Query().Get("band")
+	band := bandParam(v)
+	if v == "0" {
+		band = -1
+	}
+	list, err := s.store.ListIdeas(ctx, actorID(ctx), band, queryInt(r, "limit"))
 	if err != nil {
 		s.fail(w, err, "ideas")
 		return
@@ -71,7 +78,12 @@ func (s *Server) handleCreateIdea(w http.ResponseWriter, r *http.Request) {
 		}
 		when, created = t, isoUTC(t)
 	}
-	x := &store.Idea{UserID: uid, ClientID: clip(strings.TrimSpace(meta.ClientID), maxClientID), Name: firstNonEmpty(meta.Name, "Idea "+when.In(time.Local).Format("2 Jan 2006")),
+	band, _, m := s.bandFor(ctx, uid, meta.BandID, nil)
+	if m != "" {
+		bad(m)
+		return
+	}
+	x := &store.Idea{UserID: uid, BandID: band, ClientID: clip(strings.TrimSpace(meta.ClientID), maxClientID), Name: firstNonEmpty(meta.Name, "Idea "+when.In(time.Local).Format("2 Jan 2006")),
 		File: rel, Mime: mime, Size: size, DurationMS: meta.DurationMS, SampleRate: meta.SampleRate, Channels: meta.Channels, Peaks: meta.Peaks,
 		Source: meta.Source, Device: meta.Device, App: sourceOf(ctx), CreatedAt: created}
 	if err := s.store.CreateIdea(ctx, x); err != nil {
@@ -128,9 +140,11 @@ func (s *Server) handleUpdateIdea(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Name *string `json:"name"`
+		Name   *string `json:"name"`
+		BandID *int64  `json:"band_id"` // null or 0 = no band
 	}
-	if err := decode(r, &in); err != nil {
+	keys, err := decodeKeys(r, &in)
+	if err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
@@ -140,11 +154,24 @@ func (s *Server) handleUpdateIdea(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if keys["band_id"] {
+		band, _, m := s.bandFor(ctx, x.UserID, in.BandID, nil)
+		if m != "" {
+			writeErr(w, http.StatusBadRequest, m)
+			return
+		}
+		x.BandID = band
+	}
 	if err := s.store.UpdateIdea(ctx, x); err != nil {
 		s.fail(w, err, "save idea")
 		return
 	}
-	writeJSON(w, http.StatusOK, x)
+	out, err := s.store.GetIdea(ctx, x.UserID, x.ID)
+	if err != nil {
+		s.fail(w, err, "idea")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleDeleteIdea(w http.ResponseWriter, r *http.Request) {
@@ -169,7 +196,8 @@ func (s *Server) handleDeleteIdea(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleIdeaToSong makes a new song whose one track plays the idea from the
-// start; the idea itself goes (its file stays, now the take's).
+// start; the idea itself goes (its file stays, now the take's). The song is
+// in the idea's band unless band_id (null = none) or band_name says else.
 func (s *Server) handleIdeaToSong(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	uid := actorID(ctx)
@@ -186,7 +214,8 @@ func (s *Server) handleIdeaToSong(w http.ResponseWriter, r *http.Request) {
 		songInput
 		Instrument *string `json:"instrument"`
 	}
-	if err := decode(r, &in); err != nil && !errors.Is(err, io.EOF) {
+	keys, err := decodeKeys(r, &in)
+	if err != nil && !errors.Is(err, io.EOF) {
 		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
@@ -194,10 +223,18 @@ func (s *Server) handleIdeaToSong(w http.ResponseWriter, r *http.Request) {
 		in.Title = nil
 	}
 	st := s.settingsOf(ctx, uid)
-	so := &store.Song{UserID: uid, Title: x.Name, Tempo: float64(st.Tempo), Beats: st.Beats, BeatUnit: 4, CountIn: st.CountIn, Click: st.Click, Source: sourceOf(ctx)}
+	so := &store.Song{UserID: uid, Title: x.Name, BandID: x.BandID, Tempo: float64(st.Tempo), Beats: st.Beats, BeatUnit: 4, CountIn: st.CountIn, Click: st.Click, Source: sourceOf(ctx)}
 	if m := in.apply(so); m != "" {
 		writeErr(w, http.StatusBadRequest, m)
 		return
+	}
+	if keys["band_id"] || keys["band_name"] {
+		band, _, m := s.bandFor(ctx, uid, in.BandID, in.BandName)
+		if m != "" {
+			writeErr(w, http.StatusBadRequest, m)
+			return
+		}
+		so.BandID = band
 	}
 	inst := "other"
 	if in.Instrument != nil && *in.Instrument != "" {

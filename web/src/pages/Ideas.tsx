@@ -1,11 +1,12 @@
 // Ideas: quick recordings on their own — a riff, a melody — before there is
 // a song for them. Record one here (or on the phone), play it back, name it,
-// and make it the first track of a new song when it grows.
+// and make it the first track of a new song when it grows. An idea can be in
+// a band, like a song (?band=<id> or none shows one band's).
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api, V1 } from '../lib/api'
 import { useApp } from '../lib/app-context'
-import type { Idea, Instrument, Song } from '../lib/types'
+import type { Band, Idea, Instrument, Song } from '../lib/types'
 import { useOnChange, announceChange } from '../lib/data'
 import { useCrumb } from '../components/Layout'
 import { Confirm, Empty, Field, Loading, MenuButton, Modal, Spinner, useToast, errMsg } from '../components/ui'
@@ -14,30 +15,45 @@ import { Select } from '../components/Select'
 import { Mic, audioContext, audioSession, clock, encodeWav, levelTake, peaksBytes, peaksOf, uploadAudio } from '../lib/engine'
 import { fmtDateTime } from '../lib/format'
 import { INSTRUMENTS, micError } from './SongPage'
-import { METRES, useTapTempo } from './Songs'
+import { METRES, useBands, useTapTempo } from './Songs'
 
 /** The one idea playing (starting another stops it). */
 let current: HTMLAudioElement | null = null
 function stopCurrent() { current?.pause() }
 
 export default function Ideas() {
+  const [params, setParams] = useSearchParams()
+  const bandParam = params.get('band') || '' // a band's id, 'none', or '' for every idea
   const [list, setList] = useState<Idea[] | null>(null)
   const [recording, setRecording] = useState(false)
   const [toSong, setToSong] = useState<Idea | null>(null)
-  useCrumb(undefined)
-  const load = useCallback(() => { api.get<{ ideas: Idea[] }>(`${V1}/ideas`).then(r => setList(r.ideas)).catch(() => setList([])) }, [])
+  const bands = useBands()
+  const band = bands?.find(b => String(b.id) === bandParam) || null
+  useCrumb(band ? band.name : bandParam === 'none' ? 'No band' : undefined)
+  const setBand = (v: string) => { if (v) params.set('band', v); else params.delete('band'); setParams(params, { replace: true }) }
+  const load = useCallback(() => {
+    api.get<{ ideas: Idea[] }>(`${V1}/ideas${bandParam ? `?band=${encodeURIComponent(bandParam)}` : ''}`).then(r => setList(r.ideas)).catch(() => setList([]))
+  }, [bandParam])
   useEffect(() => { load() }, [load])
   useOnChange(load)
   useEffect(() => () => stopCurrent(), [])
   const record = () => { stopCurrent(); setRecording(true) }
   const recordBtn = <button type="button" className="btn primary" onClick={record} disabled={recording}><Icon name="record" size={15} />Record an idea</button>
+  const changed = announceChange // reloads this list and the bands' counts
   return (
     <div className="page">
-      {!!list?.length && <div className="toolbar"><span className="grow muted small">{list.length} {list.length === 1 ? 'idea' : 'ideas'}, newest first</span>{recordBtn}</div>}
-      {recording && <Recorder onClose={() => setRecording(false)} onKept={() => { load(); announceChange() }} />}
+      {(!!list?.length || bandParam) && <div className="toolbar">
+        <span className="grow muted small">{list ? `${list.length} ${list.length === 1 ? 'idea' : 'ideas'}${band ? ` for ${band.name}` : bandParam === 'none' ? ' in no band' : ''}, newest first` : ''}</span>
+        {!!bands?.length && <Select ariaLabel="Band" value={bandParam} onChange={setBand} placeholder="Every band" clearLabel="Every band"
+          options={[...bands.map(b => ({ value: String(b.id), label: b.name, hint: String(b.ideas) })), { value: 'none', label: 'In no band' }]} />}
+        {recordBtn}
+      </div>}
+      {recording && <Recorder band={band} onClose={() => setRecording(false)} onKept={changed} />}
       {!list ? <Loading /> : !list.length ? (
-        !recording && <Empty title="No ideas yet" icon="lightbulb">A riff, a melody, a few words to a tune: record it here or on the phone before it’s gone — no song, no click, just the microphone. When it grows, make it the first track of a new song.<div className="row mt" style={{ justifyContent: 'center' }}>{recordBtn}</div></Empty>
-      ) : <section className="card"><ul className="list">{list.map(x => <li key={x.id}><IdeaRow x={x} onChange={load} onSong={() => { stopCurrent(); setToSong(x) }} /></li>)}</ul></section>}
+        !recording && (bandParam
+          ? <Empty title={band ? `No ideas for ${band.name} yet` : 'No ideas here'} icon="lightbulb">{band ? 'Record one while this band is chosen and it goes in this band; or choose Band in an idea’s menu.' : 'Every idea is in a band.'}</Empty>
+          : <Empty title="No ideas yet" icon="lightbulb">A riff, a melody, a few words to a tune: record it here or on the phone before it’s gone — no song, no click, just the microphone. When it grows, make it the first track of a new song.<div className="row mt" style={{ justifyContent: 'center' }}>{recordBtn}</div></Empty>)
+      ) : <section className="card"><ul className="list">{list.map(x => <li key={x.id}><IdeaRow x={x} bands={bands || []} onChange={changed} onSong={() => { stopCurrent(); setToSong(x) }} /></li>)}</ul></section>}
       {toSong && <ToSong x={toSong} onClose={() => setToSong(null)} />}
     </div>
   )
@@ -53,8 +69,8 @@ function clientId(): string {
   return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
 }
 
-/** The microphone straight to an idea: no click, no count-in, the browser's voice filters off. */
-function Recorder({ onClose, onKept }: { onClose: () => void; onKept: () => void }) {
+/** The microphone straight to an idea: no click, no count-in, the browser's voice filters off. It goes in `band` when one is chosen. */
+function Recorder({ band, onClose, onKept }: { band: Band | null; onClose: () => void; onKept: () => void }) {
   const { settings } = useApp()
   const { toast } = useToast()
   const [state, setState] = useState<RecState>('opening')
@@ -131,6 +147,7 @@ function Recorder({ onClose, onKept }: { onClose: () => void; onKept: () => void
       meta: {
         duration_ms: Math.round(len / got.rate * 1000), sample_rate: got.rate, channels: got.channels.length, peaks: peaksOf(got.channels, got.rate),
         source: 'recorded', device: m.label, client_id: clientId(), created_at: started.current.toISOString(),
+        ...(band ? { band_id: band.id } : {}),
       },
     }
     await send()
@@ -161,7 +178,7 @@ function Recorder({ onClose, onKept }: { onClose: () => void; onKept: () => void
 
 // ---- one idea ----
 
-function IdeaRow({ x, onChange, onSong }: { x: Idea; onChange: () => void; onSong: () => void }) {
+function IdeaRow({ x, bands, onChange, onSong }: { x: Idea; bands: Band[]; onChange: () => void; onSong: () => void }) {
   const { toast } = useToast()
   const audio = useRef<HTMLAudioElement | null>(null)
   const [playing, setPlaying] = useState(false)
@@ -202,6 +219,11 @@ function IdeaRow({ x, onChange, onSong }: { x: Idea; onChange: () => void; onSon
     if (!n || n === x.name) { setName(x.name); return }
     try { await api.put(`${V1}/ideas/${x.id}`, { name: n }); onChange() } catch (e) { setName(x.name); toast(errMsg(e), 'err') }
   }
+  const setBand = async (id: number | null) => {
+    if (id === x.band_id) return
+    try { await api.put(`${V1}/ideas/${x.id}`, { band_id: id }); onChange() } catch (e) { toast(errMsg(e), 'err') }
+  }
+  const bandColor = bands.find(b => b.id === x.band_id)?.color
 
   return (
     <div className="list-row idea-row">
@@ -213,6 +235,7 @@ function IdeaRow({ x, onChange, onSong }: { x: Idea; onChange: () => void; onSon
                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void saveName() } else if (e.key === 'Escape') { e.preventDefault(); setName(x.name); setEditing(false) } }}
                 onBlur={() => void saveName()} />
             : <button type="button" className="idea-name ellipsis" onClick={() => setEditing(true)} title="Rename">{x.name}</button>}
+          {x.band_name && !editing && <span className={`band-tag ${bandColor ? 'tinted' : ''}`} style={bandColor ? { ['--band' as string]: bandColor } : undefined} title={`In ${x.band_name}`}>{x.band_name}</span>}
         </div>
         <div className="muted small">{fmtDateTime(x.created_at)} · {clock(x.duration_ms / 1000, false)}{x.device ? ` · ${x.device}` : ''}</div>
         <BarWave peaks={x.peaks} durationMs={x.duration_ms} time={time} live={playing} onSeek={seek} />
@@ -221,6 +244,11 @@ function IdeaRow({ x, onChange, onSong }: { x: Idea; onChange: () => void; onSon
       <MenuButton label="Idea" align="right" width={220} items={() => [
         { label: 'Make it a song', icon: 'waveform', onSelect: onSong },
         { label: 'Rename', icon: 'edit', onSelect: () => setEditing(true) },
+        { label: 'Band', icon: 'users', hint: x.band_name || undefined, submenu: [
+          ...bands.map(b => ({ label: b.name, checked: x.band_id === b.id, onSelect: () => void setBand(b.id) })),
+          ...(bands.length ? ['sep' as const] : []),
+          { label: 'No band', checked: !x.band_id, onSelect: () => void setBand(null) },
+        ] },
         { label: 'Download', icon: 'download', onSelect: () => { window.location.href = `${V1}/ideas/${x.id}/audio?download=1` } },
         'sep' as const,
         { label: 'Delete', icon: 'trash', danger: true, onSelect: () => setDel(true) },
@@ -331,13 +359,14 @@ function ToSong({ x, onClose }: { x: Idea; onClose: () => void }) {
   const { settings } = useApp()
   const { toast } = useToast()
   const navigate = useNavigate()
-  const [f, setF] = useState({ title: x.name, instrument: 'other' as Instrument, tempo: settings?.tempo || 100, beats: settings?.beats || 4, beat_unit: 4 })
+  const bands = useBands()
+  const [f, setF] = useState({ title: x.name, instrument: 'other' as Instrument, tempo: settings?.tempo || 100, beats: settings?.beats || 4, beat_unit: 4, band_id: x.band_id || 0 })
   const [busy, setBusy] = useState(false)
   const tap = useTapTempo(bpm => setF(v => ({ ...v, tempo: bpm })))
   const save = async () => {
     setBusy(true)
     try {
-      const so = await api.post<Song>(`${V1}/ideas/${x.id}/song`, { ...f, title: f.title.trim() || x.name })
+      const so = await api.post<Song>(`${V1}/ideas/${x.id}/song`, { ...f, title: f.title.trim() || x.name, band_id: f.band_id || null })
       announceChange()
       onClose()
       navigate(`/songs/${so.id}`)
@@ -362,10 +391,17 @@ function ToSong({ x, onClose }: { x: Idea; onClose: () => void }) {
             </div>
           </Field>
         </div>
-        <Field label="Beats in a bar">
-          <Select ariaLabel="Time signature" value={`${f.beats}/${f.beat_unit}`} onChange={v => { const [b, u] = v.split('/').map(Number); setF({ ...f, beats: b, beat_unit: u }) }}
-            options={METRES.map(v => ({ value: v, label: v }))} />
-        </Field>
+        <div className="two-col tight">
+          <Field label="Beats in a bar">
+            <Select ariaLabel="Time signature" value={`${f.beats}/${f.beat_unit}`} onChange={v => { const [b, u] = v.split('/').map(Number); setF({ ...f, beats: b, beat_unit: u }) }}
+              options={METRES.map(v => ({ value: v, label: v }))} />
+          </Field>
+          <Field label="Band (optional)">
+            <Select ariaLabel="Band" value={f.band_id ? String(f.band_id) : ''} onChange={v => setF(o => ({ ...o, band_id: Number(v) || 0 }))} placeholder="No band" clearLabel="No band"
+              options={(bands || []).map(b => ({ value: String(b.id), label: b.name }))} createLabel="New band"
+              onCreate={async name => { const b = await api.post<Band>(`${V1}/bands`, { name }); announceChange(); return String(b.id) }} />
+          </Field>
+        </div>
         <p className="muted small">The idea becomes the first track, from the very start of the song. Record the next ones on top of it; the idea leaves this list.</p>
         <button type="submit" hidden />
       </form>

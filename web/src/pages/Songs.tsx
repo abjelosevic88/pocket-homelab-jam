@@ -41,7 +41,7 @@ export default function Songs() {
         <span className="band-dot"><Icon name="users" size={18} /></span>
         <div className="grow min0">
           <h2 className="ellipsis">{band.name}</h2>
-          <div className="muted small">{band.songs} {band.songs === 1 ? 'song' : 'songs'}{band.notes && <> · <span className="ellipsis">{band.notes}</span></>}</div>
+          <div className="muted small">{band.songs} {band.songs === 1 ? 'song' : 'songs'}{band.ideas > 0 && <> · <Link to={`/ideas?band=${band.id}`}>{band.ideas} {band.ideas === 1 ? 'idea' : 'ideas'}</Link></>}{band.notes && <> · <span className="ellipsis">{band.notes}</span></>}</div>
         </div>
         <MenuButton label="Band" align="right" items={[
           { label: 'Rename, colour, notes', icon: 'edit', onSelect: () => setEditBand(band) },
@@ -64,7 +64,7 @@ export default function Songs() {
       ) : <div className="song-grid">{songs.map(s => <SongCard key={s.id} s={s} />)}</div>}
       {adding && <NewSong onClose={() => setAdding(false)} band={band} />}
       {editBand && <BandForm band={editBand === 'new' ? undefined : editBand} onClose={() => setEditBand(null)} onSaved={() => { setEditBand(null); announceChange() }} />}
-      {delBand && <Confirm title={`Delete “${delBand.name}”?`} message="Its songs stay, in no band." confirmLabel="Delete" onCancel={() => setDelBand(null)}
+      {delBand && <Confirm title={`Delete “${delBand.name}”?`} message="Its songs and ideas stay, in no band." confirmLabel="Delete" onCancel={() => setDelBand(null)}
         onConfirm={async () => { try { await api.del(`${V1}/bands/${delBand.id}`); setDelBand(null); announceChange(); navigate('/songs') } catch (e) { toast(errMsg(e), 'err') } }} />}
     </div>
   )

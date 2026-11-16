@@ -272,3 +272,159 @@ func TestIdeaLinkScopes(t *testing.T) {
 		}
 	}
 }
+
+func TestIdeaBands(t *testing.T) {
+	a := newApp(t, nil)
+	trio := a.ok(a.alice, "POST", "/api/v1/bands", map[string]any{"name": "The Trio", "color": "#336699"})
+	duo := a.ok(a.alice, "POST", "/api/v1/bands", map[string]any{"name": "Duo"})
+	bobs := a.ok(a.bob, "POST", "/api/v1/bands", map[string]any{"name": "Bob's band"})
+	tid, did := id(trio), id(duo)
+
+	// upload into a band; not into another person's band or one that is not there
+	code, i1 := a.upload(a.alice, "/api/v1/ideas", map[string]any{"name": "Riff", "band_id": n(tid)}, tone(0.3), "idea.wav")
+	if code != 201 || id(map[string]any{"id": i1["band_id"]}) != tid || i1["band_name"] != "The Trio" {
+		t.Fatalf("idea in a band: %d %v", code, i1)
+	}
+	if code, bad := a.upload(a.alice, "/api/v1/ideas", map[string]any{"band_id": n(id(bobs))}, tone(0.2), "idea.wav"); code != 400 || bad["error"] != "that band is not here" {
+		t.Fatalf("Bob's band: %d %v", code, bad)
+	}
+	if code, _ := a.upload(a.alice, "/api/v1/ideas", map[string]any{"band_id": 99999}, tone(0.2), "idea.wav"); code != 400 {
+		t.Fatalf("a band that is not there: %d", code)
+	}
+	if files, _ := a.st.AllMediaFiles(t.Context(), a.ids["Alice"]); len(files) != 1 {
+		t.Fatalf("the refused uploads keep no file: %v", files)
+	}
+	code, i2 := a.upload(a.alice, "/api/v1/ideas", map[string]any{"name": "Hum"}, tone(0.2), "idea.wav")
+	if code != 201 || i2["band_id"] != nil || i2["band_name"] != "" {
+		t.Fatalf("idea in no band: %d %v", code, i2)
+	}
+	_, i3 := a.upload(a.alice, "/api/v1/ideas", map[string]any{"name": "Whistle", "band_id": 0}, tone(0.2), "idea.wav")
+	if i3["band_id"] != nil {
+		t.Fatalf("band_id 0 is no band: %v", i3)
+	}
+
+	// PUT: the band alone leaves the name; the name alone leaves the band
+	if r := a.ok(a.alice, "PUT", "/api/v1/ideas/"+id(i2), map[string]any{"band_id": n(did)}); r["name"] != "Hum" || r["band_name"] != "Duo" {
+		t.Fatalf("set band: %v", r)
+	}
+	if r := a.ok(a.alice, "PUT", "/api/v1/ideas/"+id(i2), map[string]any{"name": "Hum 2"}); r["name"] != "Hum 2" || r["band_name"] != "Duo" {
+		t.Fatalf("rename keeps the band: %v", r)
+	}
+	if r := a.ok(a.alice, "PUT", "/api/v1/ideas/"+id(i2), map[string]any{"band_id": nil}); r["name"] != "Hum 2" || r["band_id"] != nil || r["band_name"] != "" {
+		t.Fatalf("clear band (null): %v", r)
+	}
+	a.ok(a.alice, "PUT", "/api/v1/ideas/"+id(i3), map[string]any{"band_id": n(did)})
+	if r := a.ok(a.alice, "PUT", "/api/v1/ideas/"+id(i3), map[string]any{"band_id": 0}); r["band_id"] != nil {
+		t.Fatalf("clear band (0): %v", r)
+	}
+	if r := a.expect(400, a.alice, "PUT", "/api/v1/ideas/"+id(i3), map[string]any{"band_id": n(id(bobs))}); r["error"] != "that band is not here" {
+		t.Fatalf("PUT Bob's band: %v", r)
+	}
+	a.expect(400, a.alice, "PUT", "/api/v1/ideas/"+id(i3), map[string]any{"name": "", "band_id": n(did)})
+	if g := a.ok(a.alice, "GET", "/api/v1/ideas/"+id(i3), nil); g["name"] != "Whistle" || g["band_id"] != nil {
+		t.Fatalf("a refused PUT changes nothing: %v", g)
+	}
+	a.ok(a.alice, "PUT", "/api/v1/ideas/"+id(i2), map[string]any{"band_id": n(did)})
+
+	// the list by band: one band's, none, all
+	names := func(q string) []string {
+		var out []string
+		for _, x := range a.ok(a.alice, "GET", "/api/v1/ideas"+q, nil)["ideas"].([]any) {
+			out = append(out, x.(map[string]any)["name"].(string))
+		}
+		return out
+	}
+	if got := names("?band=" + tid); len(got) != 1 || got[0] != "Riff" {
+		t.Fatalf("band=trio: %v", got)
+	}
+	if got := names("?band=" + did); len(got) != 1 || got[0] != "Hum 2" {
+		t.Fatalf("band=duo: %v", got)
+	}
+	if got := names("?band=none"); len(got) != 1 || got[0] != "Whistle" {
+		t.Fatalf("band=none: %v", got)
+	}
+	if got := names("?band=0"); len(got) != 1 || got[0] != "Whistle" {
+		t.Fatalf("band=0: %v", got)
+	}
+	if got := names(""); len(got) != 3 {
+		t.Fatalf("all: %v", got)
+	}
+	if got := len(a.ok(a.bob, "GET", "/api/v1/ideas?band="+tid, nil)["ideas"].([]any)); got != 0 {
+		t.Fatalf("Bob with Alice's band: %d", got)
+	}
+
+	// the band's counts
+	for _, b := range a.ok(a.alice, "GET", "/api/v1/bands", nil)["bands"].([]any) {
+		m := b.(map[string]any)
+		if num(m, "ideas") != 1 || num(m, "songs") != 0 {
+			t.Fatalf("band counts: %v", m)
+		}
+	}
+	if g := a.ok(a.alice, "GET", "/api/v1/bands/"+tid, nil); num(g, "ideas") != 1 {
+		t.Fatalf("band: %v", g)
+	}
+
+	// idea → song: the idea's band, unless band_id says else (null = none)
+	so := a.ok(a.alice, "POST", "/api/v1/ideas/"+id(i1)+"/song", nil)
+	if so["band_name"] != "The Trio" || id(map[string]any{"id": so["band_id"]}) != tid {
+		t.Fatalf("the song gets the idea's band: %v", so)
+	}
+	a.expect(400, a.alice, "POST", "/api/v1/ideas/"+id(i2)+"/song", map[string]any{"band_id": n(id(bobs))})
+	so2 := a.ok(a.alice, "POST", "/api/v1/ideas/"+id(i2)+"/song", map[string]any{"band_id": nil})
+	if so2["band_id"] != nil || so2["band_name"] != "" {
+		t.Fatalf("band_id null: no band: %v", so2)
+	}
+	so3 := a.ok(a.alice, "POST", "/api/v1/ideas/"+id(i3)+"/song", map[string]any{"band_id": n(did), "title": "Whistler"})
+	if so3["band_name"] != "Duo" || so3["title"] != "Whistler" {
+		t.Fatalf("band_id wins: %v", so3)
+	}
+	if b := a.ok(a.alice, "GET", "/api/v1/bands/"+tid, nil); num(b, "songs") != 1 || num(b, "ideas") != 0 {
+		t.Fatalf("band after the song: %v", b)
+	}
+
+	// deleting a band leaves its ideas in no band: through the API, and by the
+	// foreign key alone
+	_, i4 := a.upload(a.alice, "/api/v1/ideas", map[string]any{"name": "Four", "band_id": n(did)}, tone(0.2), "idea.wav")
+	_, i5 := a.upload(a.alice, "/api/v1/ideas", map[string]any{"name": "Five", "band_id": n(tid)}, tone(0.2), "idea.wav")
+	a.ok(a.alice, "DELETE", "/api/v1/bands/"+did, nil)
+	if g := a.ok(a.alice, "GET", "/api/v1/ideas/"+id(i4), nil); g["band_id"] != nil || g["band_name"] != "" {
+		t.Fatalf("idea after its band went: %v", g)
+	}
+	if _, err := a.st.DB.Exec(`DELETE FROM bands WHERE id = ?`, n(tid)); err != nil {
+		t.Fatal(err)
+	}
+	if g := a.ok(a.alice, "GET", "/api/v1/ideas/"+id(i5), nil); g["band_id"] != nil {
+		t.Fatalf("ON DELETE SET NULL: %v", g)
+	}
+}
+
+func TestIdeaBandsExportImport(t *testing.T) {
+	a := newApp(t, nil)
+	b := a.ok(a.alice, "POST", "/api/v1/bands", map[string]any{"name": "The Trio"})
+	a.upload(a.alice, "/api/v1/ideas", map[string]any{"name": "Hum", "band_id": n(id(b))}, tone(0.3), "a.wav")
+	a.upload(a.alice, "/api/v1/ideas", map[string]any{"name": "Loose"}, tone(0.2), "b.wav")
+	req, _ := http.NewRequest("GET", a.url+"/api/v1/export.json?audio=1", nil)
+	req.Header.Set("Authorization", "Bearer "+a.alice)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zipped, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	req, _ = http.NewRequest("POST", a.url+"/api/v1/import", bytes.NewReader(zipped))
+	req.Header.Set("Authorization", "Bearer "+a.bob)
+	if res, err = http.DefaultClient.Do(req); err != nil || res.StatusCode != 200 {
+		t.Fatalf("import: %v %v", err, res)
+	}
+	res.Body.Close()
+	for _, x := range a.ok(a.bob, "GET", "/api/v1/ideas", nil)["ideas"].([]any) {
+		m := x.(map[string]any)
+		if (m["name"] == "Hum") != (m["band_name"] == "The Trio") {
+			t.Fatalf("imported idea's band: %v", m)
+		}
+	}
+	bands := a.ok(a.bob, "GET", "/api/v1/bands", nil)["bands"].([]any)
+	if len(bands) != 1 || num(bands[0].(map[string]any), "ideas") != 1 {
+		t.Fatalf("Bob's bands: %v", bands)
+	}
+}

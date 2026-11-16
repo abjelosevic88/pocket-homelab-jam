@@ -32,17 +32,17 @@ Everything is under `/api/v1`, JSON unless said otherwise. Sign in with the sess
 
 ## Ideas
 
-A quick recording on its own (a riff, a melody) before there is a song for it. An idea is `{id, client_id, name, mime, size, duration_ms, sample_rate, channels, peaks, source, device, created_at}`.
+A quick recording on its own (a riff, a melody) before there is a song for it. An idea is `{id, client_id, name, mime, size, duration_ms, sample_rate, channels, peaks, source, device, band_id, band_name, created_at}`. Like a song it can be in one of your bands: `band_id` is the band's id or `null`, `band_name` its name or `""`. Deleting a band leaves its ideas in no band. A band (`GET /bands`, `GET /bands/ID`) counts its `songs` and its `ideas`.
 
 | Call | What |
 |---|---|
-| `GET /ideas` | `{ideas}`, newest first |
-| `POST /ideas` | Multipart like a take: `meta` (JSON `{name, duration_ms, sample_rate, channels, peaks, source, device, client_id, created_at}`) + `file`. 201 with the idea. With a `client_id` this person already sent, 200 with that idea and the file is not kept (safe to send again). No `name`: "Idea" and the day; `created_at` (RFC 3339) is when it was recorded, else now |
+| `GET /ideas?band=` | `{ideas}`, newest first. `band=ID`: that band's; `band=none` (or `0`): the ones in no band; no `band`: all |
+| `POST /ideas` | Multipart like a take: `meta` (JSON `{name, duration_ms, sample_rate, channels, peaks, source, device, client_id, created_at, band_id}`) + `file`. 201 with the idea. `band_id` (optional; `0` or `null` = none) must be one of your bands, else 400. With a `client_id` this person already sent, 200 with that idea and the file is not kept (safe to send again). No `name`: "Idea" and the day; `created_at` (RFC 3339) is when it was recorded, else now |
 | `GET /ideas/ID` | The idea |
 | `GET /ideas/ID/audio` | The audio, with ranges (`?download=1` to save) |
-| `PUT /ideas/ID` | `{name}` |
+| `PUT /ideas/ID` | `{name, band_id}`: only what is sent changes; `"band_id": null` (or `0`) takes it out of its band; a band that is not yours is 400, an empty name too. 200 with the idea |
 | `DELETE /ideas/ID` | 204; the file goes too |
-| `POST /ideas/ID/song` | `{title, tempo, beats, beat_unit, key_name, count_in, click, instrument}` (all optional: the idea's name, your settings, `other`). 201 with the new song like `GET /songs/ID`: one track with one take, the idea's recording from the start. The idea is gone after; nothing changes when it fails |
+| `POST /ideas/ID/song` | `{title, tempo, beats, beat_unit, key_name, count_in, click, instrument, band_id}` (all optional: the idea's name, your settings, `other`, the idea's band; `"band_id": null` = no band, a band that is not yours is 400). 201 with the new song like `GET /songs/ID`: one track with one take, the idea's recording from the start. The idea is gone after; nothing changes when it fails |
 
 ## Time spent
 
