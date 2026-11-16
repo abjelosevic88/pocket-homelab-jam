@@ -12,7 +12,9 @@ import { useCrumb } from '../components/Layout'
 import { Confirm, ContextMenu, Empty, Field, Loading, MenuButton, Modal, Spinner, useContextMenu, useToast, errMsg, type MenuItem } from '../components/ui'
 import { Icon } from '../components/icons'
 import { Select } from '../components/Select'
-import { Mic, audioContext, audioSession, clock, encodeWav, levelTake, peaksBytes, peaksOf, uploadAudio } from '../lib/engine'
+import { Mic, audioContext, audioSession, clock, decode, encodeWav, levelTake, peaksBytes, peaksOf, uploadAudio } from '../lib/engine'
+import { clientId, partFile, rangeLabel, saveBlob, sliceAudio, type Sel } from '../lib/part'
+import { SelBand, SelBar, useRangeSelect } from '../components/Selection'
 import { fmtDateTime } from '../lib/format'
 import { INSTRUMENTS, micError } from './SongPage'
 import { METRES, useBands, useTapTempo } from './Songs'
@@ -62,12 +64,6 @@ export default function Ideas() {
 // ---- recording ----
 
 type RecState = 'opening' | 'rolling' | 'saving' | 'failed'
-
-function clientId(): string {
-  const c = (globalThis.crypto as Crypto | undefined)
-  if (c?.randomUUID) return c.randomUUID()
-  return `web-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
-}
 
 /** The microphone straight to an idea: no click, no count-in, the browser's voice filters off. It goes in `band` when one is chosen. */
 function Recorder({ band, onClose, onKept }: { band: Band | null; onClose: () => void; onKept: () => void }) {
@@ -178,6 +174,8 @@ function Recorder({ band, onClose, onKept }: { band: Band | null; onClose: () =>
 
 // ---- one idea ----
 
+type PartJob = 'download' | 'save' | 'cut'
+
 function IdeaRow({ x, bands, onChange, onSong }: { x: Idea; bands: Band[]; onChange: () => void; onSong: () => void }) {
   const { toast } = useToast()
   const audio = useRef<HTMLAudioElement | null>(null)
@@ -186,6 +184,13 @@ function IdeaRow({ x, bands, onChange, onSong }: { x: Idea; bands: Band[]; onCha
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(x.name)
   const [del, setDel] = useState(false)
+  const [sel, setSel] = useState<Sel | null>(null) // a part, to play, save or keep
+  const [focusSel, setFocusSel] = useState(0)
+  const [job, setJob] = useState<PartJob | null>(null)
+  const [cut, setCut] = useState<Sel | null>(null)
+  const stopAt = useRef<number | null>(null) // playing the part: where it pauses
+  const sound = useRef<Promise<AudioBuffer> | null>(null)
+  const total = x.duration_ms / 1000
   useEffect(() => setName(x.name), [x.name])
   useEffect(() => () => { const a = audio.current; if (a) { a.pause(); if (current === a) current = null } }, [])
 
@@ -195,23 +200,96 @@ function IdeaRow({ x, bands, onChange, onSong }: { x: Idea; bands: Band[]; onCha
       a.preload = 'metadata'
       a.onplay = () => { if (current && current !== a) current.pause(); current = a; setPlaying(true) }
       a.onpause = () => { setPlaying(false); setAt(a.currentTime) }
-      a.onended = () => { setPlaying(false); setAt(null); a.currentTime = 0 }
+      a.onended = () => { stopAt.current = null; setPlaying(false); setAt(null); a.currentTime = 0 }
       audio.current = a
     }
     return audio.current
   }
   const toggle = () => {
     const a = el()
+    stopAt.current = null
     if (playing) { a.pause(); return }
     audioSession('playback')
     a.play().catch(e => toast(errMsg(e), 'err'))
   }
   const seek = (sec: number) => {
     const a = el()
+    stopAt.current = null
     a.currentTime = sec
     setAt(sec)
   }
   const time = () => (playing && audio.current ? audio.current.currentTime : at)
+  // the part plays from its start and pauses at its end (the playhead stays there)
+  const partPlaying = playing && stopAt.current !== null
+  const playPart = () => {
+    if (!sel) return
+    const a = el()
+    if (partPlaying) { stopAt.current = null; a.pause(); return }
+    stopAt.current = sel.b
+    a.currentTime = sel.a
+    setAt(sel.a)
+    if (!playing) { audioSession('playback'); a.play().catch(e => toast(errMsg(e), 'err')) }
+  }
+  useEffect(() => {
+    if (!playing) return
+    let raf = 0
+    const frame = () => {
+      const a = audio.current, end = stopAt.current
+      if (a && end !== null && a.currentTime >= end) { stopAt.current = null; a.pause(); a.currentTime = end }
+      raf = requestAnimationFrame(frame)
+    }
+    raf = requestAnimationFrame(frame)
+    return () => cancelAnimationFrame(raf)
+  }, [playing])
+
+  // ---- the part as sound: the recording fetched and decoded once, then sliced ----
+  const decoded = () => {
+    if (!sound.current) {
+      const p = fetch(`${V1}/ideas/${x.id}/audio`, { credentials: 'same-origin' })
+        .then(r => { if (!r.ok) throw new Error(`The recording did not load (${r.status})`); return r.arrayBuffer() })
+        .then(b => decode(audioContext(), b))
+      p.catch(() => { if (sound.current === p) sound.current = null })
+      sound.current = p
+    }
+    return sound.current
+  }
+  const part = async (s: Sel) => {
+    const b = await decoded()
+    const channels = sliceAudio(b, s)
+    const len = channels[0]?.length || 0
+    if (!len) throw new Error('Nothing in that part')
+    return { wav: encodeWav(channels, b.sampleRate), meta: { duration_ms: Math.round(len / b.sampleRate * 1000), sample_rate: b.sampleRate, channels: channels.length, peaks: peaksOf(channels, b.sampleRate) } }
+  }
+  const run = async (j: PartJob, fn: () => Promise<void>) => {
+    if (job) return
+    setJob(j)
+    try { await fn() } catch (e) { toast(errMsg(e), 'err') } finally { setJob(null) }
+  }
+  const band = x.band_id ? { band_id: x.band_id } : {}
+  const downloadPart = () => { const s = sel; if (s) void run('download', async () => saveBlob((await part(s)).wav, partFile(x.name, s))) }
+  const savePart = () => {
+    const s = sel
+    if (!s) return
+    void run('save', async () => {
+      const p = await part(s)
+      const idea = await uploadAudio(`${V1}/ideas`, p.wav, 'idea.wav', {
+        ...p.meta, name: `${x.name} (${rangeLabel(s)})`, source: 'upload', device: x.device, client_id: clientId(),
+        created_at: new Date(Date.parse(x.created_at) + s.a * 1000).toISOString(), ...band,
+      }) as Idea
+      toast(`Kept “${idea.name}” as a new idea`, 'ok')
+      onChange()
+    })
+  }
+  // the part replaces the idea: the new one first, and only then the old one goes
+  const cutTo = (s: Sel) => void run('cut', async () => {
+    const p = await part(s)
+    await uploadAudio(`${V1}/ideas`, p.wav, 'idea.wav', { ...p.meta, name: x.name, source: x.source || 'upload', device: x.device, client_id: clientId(), created_at: x.created_at, ...band })
+    audio.current?.pause()
+    try { await api.del(`${V1}/ideas/${x.id}`) } catch (e) { toast(`The part is kept, but the whole recording is still here too: ${errMsg(e)}`, 'err'); onChange(); return }
+    toast(`Cut to ${(s.b - s.a).toFixed(1)} s`, 'ok')
+    onChange()
+  })
+  const selectAll = () => { if (total > 0) setSel({ a: 0, b: total }) }
 
   const saveName = async () => {
     setEditing(false)
@@ -236,11 +314,21 @@ function IdeaRow({ x, bands, onChange, onSong }: { x: Idea; bands: Band[]; onCha
     ] },
     { label: 'Download', icon: 'download', onSelect: () => { window.location.href = `${V1}/ideas/${x.id}/audio?download=1` } },
     'sep' as const,
+    { label: 'Select a part…', icon: 'scissors', disabled: total <= 0, onSelect: () => { selectAll(); setFocusSel(n => n + 1) } },
+    { label: 'Select all', icon: 'maximize', disabled: total <= 0, onSelect: selectAll },
+    ...(sel ? [
+      { label: 'Download part', icon: 'download', disabled: !!job, onSelect: downloadPart },
+      { label: 'Save part as new idea', icon: 'plus', disabled: !!job, onSelect: savePart },
+      { label: 'Keep only the part', icon: 'scissors', disabled: !!job, onSelect: () => setCut(sel) },
+    ] : []),
+    'sep' as const,
     { label: 'Delete', icon: 'trash', danger: true, onSelect: () => setDel(true) },
   ]
+  const ico = (j: PartJob, name: string) => job === j ? <Spinner size={12} /> : <Icon name={name} size={14} />
 
   return (
-    <div className="list-row idea-row" onContextMenu={e => { if (!editing) ctx.open(e) }}>
+    <div className="list-row idea-row" onContextMenu={e => { if (!editing) ctx.open(e) }}
+      onKeyDown={e => { if (e.key === 'Escape' && sel && !editing && e.currentTarget.contains(e.target as Node)) { e.preventDefault(); setSel(null) } }}>
       <button type="button" className={`play-btn ${playing ? 'on' : ''}`} onClick={toggle} aria-label={playing ? 'Pause' : 'Play'}><Icon name={playing ? 'pause' : 'play'} size={16} /></button>
       <div className="grow min0">
         <div className="row" style={{ gap: 8 }}>
@@ -252,7 +340,13 @@ function IdeaRow({ x, bands, onChange, onSong }: { x: Idea; bands: Band[]; onCha
           {x.band_name && !editing && <span className={`band-tag ${bandColor ? 'tinted' : ''}`} style={bandColor ? { ['--band' as string]: bandColor } : undefined} title={`In ${x.band_name}`}>{x.band_name}</span>}
         </div>
         <div className="muted small">{fmtDateTime(x.created_at)} · {clock(x.duration_ms / 1000, false)}{x.device ? ` · ${x.device}` : ''}</div>
-        <BarWave peaks={x.peaks} durationMs={x.duration_ms} time={time} live={playing} onSeek={seek} />
+        <BarWave peaks={x.peaks} durationMs={x.duration_ms} time={time} live={playing} onSeek={seek} sel={sel} onSelect={setSel} />
+        {sel && <SelBar sel={sel} total={total} onChange={setSel} onClear={() => setSel(null)} playhead={() => time() ?? 0} focus={focusSel}>
+          <button type="button" className="btn sm" onClick={playPart} title={partPlaying ? 'Pause' : 'Play the part, then pause at its end'}><Icon name={partPlaying ? 'pause' : 'play'} size={14} />{partPlaying ? 'Pause' : 'Play selection'}</button>
+          <button type="button" className="btn sm" onClick={downloadPart} disabled={!!job} title="Save just this part (WAV)">{ico('download', 'download')}Download part</button>
+          <button type="button" className="btn sm" onClick={savePart} disabled={!!job} title="A new idea with just this part; this one stays">{ico('save', 'plus')}Save as new idea</button>
+          <button type="button" className="btn sm" onClick={() => setCut(sel)} disabled={!!job} title="Cut the idea down to this part">{ico('cut', 'scissors')}Keep only this</button>
+        </SelBar>}
       </div>
       <button type="button" className="btn hide-mobile" onClick={onSong} title="Make it the first track of a new song"><Icon name="plus" size={15} />Make a song</button>
       <MenuButton label="Idea" align="right" width={220} items={items}><Icon name="more" size={16} /></MenuButton>
@@ -260,6 +354,8 @@ function IdeaRow({ x, bands, onChange, onSong }: { x: Idea; bands: Band[]; onCha
         items={[{ label: playing ? 'Pause' : 'Play', icon: playing ? 'pause' : 'play', onSelect: toggle }, 'sep' as const, ...items()]} />}
       {del && <Confirm title={`Delete “${x.name}”?`} message="The recording is gone for good." confirmLabel="Delete" onCancel={() => setDel(false)}
         onConfirm={async () => { setDel(false); audio.current?.pause(); try { await api.del(`${V1}/ideas/${x.id}`) } catch (e) { toast(errMsg(e), 'err') } announceChange(); onChange() }} />}
+      {cut && <Confirm title={`Cut “${x.name}” to ${rangeLabel(cut)}?`} message="The rest of the recording is gone for good." confirmLabel="Cut" onCancel={() => setCut(null)}
+        onConfirm={() => { const s = cut; setCut(null); cutTo(s) }} />}
     </div>
   )
 }
@@ -313,8 +409,10 @@ function drawBars(c: HTMLCanvasElement, p: Uint8Array, width: number, height: nu
   }
 }
 
-/** An idea's waveform: rounded bars, the playhead while it plays (redrawn every frame), "elapsed / total"; a click seeks. */
-function BarWave({ peaks, durationMs, time, live, onSeek, height = 36 }: { peaks: string; durationMs: number; time: () => number | null; live: boolean; onSeek?: (sec: number) => void; height?: number }) {
+/** An idea's waveform: rounded bars, the playhead while it plays (redrawn every frame), "elapsed / total"; a click seeks, a drag sideways selects a part. */
+function BarWave({ peaks, durationMs, time, live, onSeek, sel, onSelect, height = 36 }: {
+  peaks: string; durationMs: number; time: () => number | null; live: boolean; onSeek: (sec: number) => void; sel: Sel | null; onSelect: (s: Sel) => void; height?: number
+}) {
   const wrap = useRef<HTMLDivElement>(null)
   const canvas = useRef<HTMLCanvasElement>(null)
   const label = useRef<HTMLSpanElement>(null)
@@ -343,15 +441,16 @@ function BarWave({ peaks, durationMs, time, live, onSeek, height = 36 }: { peaks
     raf = requestAnimationFrame(frame)
     return () => cancelAnimationFrame(raf)
   }, [bytes, w, height, live, time, total])
-  const pick = (e: React.PointerEvent) => {
-    if (!onSeek || total <= 0) return
-    const r = e.currentTarget.getBoundingClientRect()
-    onSeek(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * total)
-  }
+  const drag = useRangeSelect({
+    total, sel, onSelect, onClick: onSeek,
+    timeAt: x => { const r = wrap.current!.getBoundingClientRect(); return (x - r.left) / r.width * total },
+  })
   return (
     <div className="idea-wave-row">
-      <div ref={wrap} className="idea-wave" style={{ height }} onPointerDown={pick} role="slider" aria-label="Position" aria-valuemin={0} aria-valuemax={Math.round(total)} aria-valuenow={Math.round(time() ?? 0)} tabIndex={-1}>
+      <div ref={wrap} className="idea-wave" style={{ height }} role="slider" aria-label="Position" aria-valuemin={0} aria-valuemax={Math.round(total)} aria-valuenow={Math.round(time() ?? 0)} tabIndex={-1}
+        onPointerDown={e => { e.currentTarget.focus({ preventScroll: true }); drag.strip(e) }}>
         <canvas ref={canvas} style={{ width: w || '100%', height }} aria-hidden />
+        {sel && total > 0 && <SelBand left={`${sel.a / total * 100}%`} width={`${(sel.b - sel.a) / total * 100}%`} onEdge={drag.edge} />}
       </div>
       <span ref={label} className="idea-time small muted">0:00 / {clock(total, false)}</span>
     </div>

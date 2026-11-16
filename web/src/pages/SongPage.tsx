@@ -6,7 +6,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { api, V1 } from '../lib/api'
 import { useApp } from '../lib/app-context'
-import type { Instrument, Mark, Mix, Song, Take, Track } from '../lib/types'
+import type { Idea, Instrument, Mark, Mix, Song, Take, Track } from '../lib/types'
 import {
   Mic, Player, activeTake, audible, audioContext, audioSession, barBeat, cachedTake, clock, encodeWav, latencyMs, levelTake, loadTake, mixDown,
   peaksOf, placeTake, rememberTake, uploadAudio,
@@ -20,6 +20,8 @@ import { ImportSheet } from '../components/ImportSheet'
 import { SongForm } from './Songs'
 import { MarkEditor, MarkFlag, MarkList, holdToMenu, markColor } from '../components/Marks'
 import { ago, fmtBytes } from '../lib/format'
+import { clientId, partFile, rangeLabel, saveBlob, sliceAudio, type Sel } from '../lib/part'
+import { SelBand, SelBar, useRangeSelect } from '../components/Selection'
 
 export const INSTRUMENTS: { value: Instrument; label: string; icon: string; color: string }[] = [
   { value: 'voice', label: 'Voice', icon: 'mic', color: '#e8590c' },
@@ -55,7 +57,7 @@ export default function SongPage() {
   const [sheet, setSheet] = useState<number | null>(null) // a track's own sheet
   const [adding, setAdding] = useState<null | { intent: 'record' | 'any' }>(null)
   const [editing, setEditing] = useState(false)
-  const [mixing, setMixing] = useState(false)
+  const [mixing, setMixing] = useState<null | { range?: Sel }>(null)
   const [delSong, setDelSong] = useState(false)
   const player = useRef<Player | null>(null)
   const mic = useRef<Mic | null>(null)
@@ -69,6 +71,15 @@ export default function SongPage() {
   const menuAt = useRef(0)
   const tracksRef = useRef(tracks)
   tracksRef.current = tracks
+  // a part of the song: to play (and loop), download, keep as a mix or an idea, or cut the song to
+  const [sel, setSel] = useState<Sel | null>(null)
+  const [focusSel, setFocusSel] = useState(0)
+  const [partPlay, setPartPlay] = useState(false)
+  const [loop, setLoop] = useState(false)
+  const loopRef = useRef(loop)
+  loopRef.current = loop
+  const [job, setJob] = useState<null | { what: 'download' | 'idea' | 'cut'; text?: string }>(null)
+  const [cutAsk, setCutAsk] = useState<Sel | null>(null)
   useCrumb(song?.title)
 
   const load = useCallback(async (open = false) => {
@@ -106,6 +117,7 @@ export default function SongPage() {
     const p = getPlayer()
     p.play(tracks, pos, opts())
     setPlaying(true)
+    setPartPlay(false)
   }
   const playFrom = (at: number) => {
     if (!song || rec !== 'off' || !allReady) return
@@ -113,21 +125,49 @@ export default function SongPage() {
     getPlayer().play(tracks, at, opts())
     setPos(at)
     setPlaying(true)
+    setPartPlay(false)
   }
   const stop = () => {
     const p = player.current
     if (rec === 'rolling') { void finishRecording(); return }
     if (p) { p.stop(); setPos(Math.max(0, p.position())) }
     setPlaying(false)
+    setPartPlay(false)
   }
-  const toStart = () => { if (rec !== 'off') return; const wasPlaying = playing; player.current?.stop(); setPos(0); if (wasPlaying) { getPlayer().play(tracks, 0, opts()) } else player.current?.seek(0) }
+  const toStart = () => { if (rec !== 'off') return; setPartPlay(false); const wasPlaying = playing; player.current?.stop(); setPos(0); if (wasPlaying) { getPlayer().play(tracks, 0, opts()) } else player.current?.seek(0) }
   const seek = (sec: number) => {
     if (rec !== 'off') return
     const s = Math.max(0, sec)
     setPos(s)
+    setPartPlay(false)
     if (playing) getPlayer().play(tracks, s, opts())
     else player.current?.seek(s)
   }
+
+  // ---- the part: plays from its start and stops at its end, or goes round again with Loop ----
+  const playPart = () => {
+    if (!song || !sel || rec !== 'off' || !allReady) return
+    if (partPlay && playing) { stop(); return }
+    audioSession('playback')
+    getPlayer().play(tracks, sel.a, opts())
+    setPos(sel.a)
+    setPlaying(true)
+    setPartPlay(true)
+  }
+  useEffect(() => {
+    if (!playing || !partPlay || !sel || !song) return
+    let raf = 0
+    const frame = () => {
+      const p = player.current
+      if (p && p.position() >= sel.b) {
+        if (loopRef.current) p.play(tracksRef.current, sel.a, opts())
+        else { p.stop(); p.seek(sel.b); setPos(sel.b); setPlaying(false); setPartPlay(false); return }
+      }
+      raf = requestAnimationFrame(frame)
+    }
+    raf = requestAnimationFrame(frame)
+    return () => cancelAnimationFrame(raf)
+  }, [playing, partPlay, sel, song]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- recording ----
   const record = async () => {
@@ -220,6 +260,7 @@ export default function SongPage() {
   keys.current = (e: KeyboardEvent) => {
     const t = e.target as HTMLElement
     if (t.closest('input, textarea, [contenteditable="true"]') || document.querySelector('.modal-backdrop, .menu, .sel-pop') || e.metaKey || e.ctrlKey || e.altKey) return
+    if (e.key === 'Escape' && sel) { e.preventDefault(); setSel(null); return }
     if (e.key === ' ') { e.preventDefault(); if (playing || rec === 'rolling') stop(); else play() }
     else if (e.key === 'r') { e.preventDefault(); if (rec === 'rolling') stop(); else void record() }
     else if (e.key === 'Home' || e.key === '0') { e.preventDefault(); toStart() }
@@ -294,6 +335,8 @@ export default function SongPage() {
       { label: c.track ? 'Add a note for the whole song' : 'Add a note here', icon: 'flag', hint: c.track ? undefined : 'M', onSelect: () => newMark(a, c.at, null) },
       'sep',
       { label: 'Play from here', icon: 'play', disabled: rec !== 'off' || !allReady, onSelect: () => { if (playing) seek(c.at); else playFrom(c.at) } },
+      'sep',
+      ...selectItems(),
     ]
   }
 
@@ -328,6 +371,96 @@ export default function SongPage() {
   const px = pxPerSec || 40
   const lengthSec = Math.max(song ? song.length_ms / 1000 : 0, pos) + Math.max(20, (viewW - headW) / px * 0.6)
   const laneW = Math.ceil(lengthSec * px)
+  const songLen = song ? song.length_ms / 1000 : 0
+  const ruler = useRef<HTMLDivElement>(null)
+  const drag = useRangeSelect({
+    total: songLen, sel, onSelect: setSel, onClick: seek,
+    timeAt: x => (x - (ruler.current?.getBoundingClientRect().left ?? 0)) / px,
+  })
+  const selectAll = () => { if (songLen > 0) setSel({ a: 0, b: songLen }) }
+  function selectItems(): MenuItem[] {
+    return [
+      { label: 'Select a part…', icon: 'scissors', disabled: songLen <= 0, onSelect: () => { selectAll(); setFocusSel(n => n + 1) } },
+      { label: 'Select all', icon: 'maximize', disabled: songLen <= 0, onSelect: selectAll },
+    ]
+  }
+
+  // ---- what to do with the part ----
+  const partJob = async (what: 'download' | 'idea', fn: () => Promise<void>) => {
+    if (job) return
+    setJob({ what })
+    try { await fn() } catch (e) { toast(errMsg(e), 'err') } finally { setJob(null) }
+  }
+  const downloadPart = () => { const s = sel; if (song && s) void partJob('download', async () => saveBlob((await mixDown(song, tracks, s)).wav, partFile(song.title, s))) }
+  const partToIdea = () => {
+    const s = sel
+    if (!song || !s) return
+    void partJob('idea', async () => {
+      const r = await mixDown(song, tracks, s)
+      const idea = await uploadAudio(`${V1}/ideas`, r.wav, 'idea.wav', {
+        name: `${song.title} (${rangeLabel(s)})`, duration_ms: r.ms, sample_rate: r.rate, channels: 2, peaks: peaksOf(r.channels, r.rate),
+        source: 'upload', client_id: clientId(), created_at: new Date().toISOString(), ...(song.band_id ? { band_id: song.band_id } : {}),
+      }) as Idea
+      toast(`Kept “${idea.name}” in Ideas`, 'ok', { label: 'Open', run: () => navigate('/ideas') })
+      announceChange()
+    })
+  }
+  /** Every track whose take is in the part gets a new take with just the part, picked; the notes move with it. */
+  const cutSong = async (s: Sel) => {
+    if (!song || job) return
+    if (playing) stop()
+    const hit = tracks.filter(t => { const k = activeTake(t); return !!k && k.offset_ms / 1000 < s.b && (k.offset_ms + k.duration_ms) / 1000 > s.a })
+    const untouched = tracks.filter(t => activeTake(t) && !hit.includes(t)).length
+    let done = 0
+    for (const t of hit) {
+      setJob({ what: 'cut', text: `Cutting ${done + 1} of ${hit.length} ${hit.length === 1 ? 'track' : 'tracks'}…` })
+      const k = activeTake(t)!
+      try {
+        const buf = await loadTake(k.id)
+        const off = k.offset_ms / 1000
+        const channels = sliceAudio(buf, { a: Math.max(0, s.a - off), b: Math.min(buf.duration, s.b - off) })
+        const len = channels[0]?.length || 0
+        if (!len) { done++; continue }
+        const take = await uploadAudio(`${V1}/tracks/${t.id}/takes`, encodeWav(channels, buf.sampleRate), 'take.wav', {
+          duration_ms: Math.round(len / buf.sampleRate * 1000), offset_ms: Math.round(Math.max(0, off - s.a) * 1000), latency_ms: 0, sample_rate: buf.sampleRate,
+          channels: channels.length, peaks: peaksOf(channels, buf.sampleRate), source: 'upload', device: k.device,
+        }) as Take
+        const nb = audioContext().createBuffer(channels.length, len, buf.sampleRate)
+        channels.forEach((c, i) => nb.copyToChannel(c as Float32Array<ArrayBuffer>, i))
+        rememberTake(take.id, nb)
+        setReady(r => ({ ...r, [take.id]: true }))
+        await api.put(`${V1}/tracks/${t.id}`, { take_id: take.id })
+        done++
+      } catch (e) {
+        setJob(null)
+        toast(`${t.name} could not be cut: ${errMsg(e)}${done ? ` (${done} of ${hit.length} ${hit.length === 1 ? 'track was' : 'tracks were'} cut)` : ''}`, 'err')
+        await load()
+        announceChange()
+        return
+      }
+    }
+    // the notes: the ones in the part move with it, the rest go
+    setJob({ what: 'cut', text: 'Moving the notes…' })
+    let notesFailed = 0
+    for (const m of marks) {
+      const at = m.at_ms / 1000, end = m.end_ms > m.at_ms ? m.end_ms / 1000 : at
+      try {
+        if (end < s.a || at > s.b) { await api.del(`${V1}/marks/${m.id}`); continue }
+        const na = Math.round((Math.max(at, s.a) - s.a) * 1000)
+        let ne = m.end_ms > m.at_ms ? Math.round((Math.min(end, s.b) - s.a) * 1000) : 0
+        if (ne <= na) ne = 0
+        if (na !== m.at_ms || ne !== m.end_ms) await api.put(`${V1}/marks/${m.id}`, { at_ms: na, end_ms: ne })
+      } catch { notesFailed++ }
+    }
+    setJob(null)
+    setSel(null)
+    setPos(0)
+    player.current?.seek(0)
+    await load()
+    announceChange()
+    const left = untouched ? ` · ${untouched} ${untouched === 1 ? 'track had' : 'tracks had'} nothing in the part and stayed as ${untouched === 1 ? 'it was' : 'they were'}` : ''
+    toast(`Cut to ${(s.b - s.a).toFixed(1)} s${left}${notesFailed ? ` · ${notesFailed} ${notesFailed === 1 ? 'note' : 'notes'} could not be moved` : ''}`, notesFailed ? 'err' : 'ok')
+  }
 
   if (missing) return <Empty title="This song is not here" icon="music"><button type="button" className="btn" onClick={() => navigate('/songs')}>All songs</button></Empty>
   if (!song) return <Loading />
@@ -339,8 +472,16 @@ export default function SongPage() {
     { label: 'Song details', icon: 'edit', onSelect: () => setEditing(true) },
     { label: song.starred ? 'Unstar' : 'Star', icon: 'star', onSelect: () => saveSong({ starred: !song.starred }) },
     'sep',
-    { label: 'Mix down to one file', icon: 'mixer', onSelect: () => setMixing(true), disabled: !song.take_count },
+    { label: 'Mix down to one file', icon: 'mixer', onSelect: () => setMixing({}), disabled: !song.take_count },
     { label: 'Download the tracks (.zip)', icon: 'download', onSelect: () => { window.location.href = `${V1}/songs/${song.id}/stems.zip` }, disabled: !song.take_count },
+    'sep',
+    ...selectItems(),
+    ...(sel ? [
+      { label: 'Download part', icon: 'download', disabled: !!job, onSelect: downloadPart },
+      { label: 'Save part as a mix', icon: 'mixer', disabled: !!job, onSelect: () => setMixing({ range: sel }) },
+      { label: 'Save part as an idea', icon: 'lightbulb', disabled: !!job, onSelect: partToIdea },
+      { label: 'Cut the song to this part', icon: 'scissors', disabled: !!job || busy, onSelect: () => setCutAsk(sel) },
+    ] : []),
     'sep',
     { label: 'Delete song', icon: 'trash', danger: true, onSelect: () => setDelSong(true) },
   ]
@@ -373,7 +514,7 @@ export default function SongPage() {
               <div className="tl-head tl-ruler-head" style={{ width: headW }}>
                 <span className="muted small">{tracks.length} {tracks.length === 1 ? 'track' : 'tracks'}</span>
               </div>
-              <Ruler width={laneW} px={px} bar={bar} beats={song.beats} onSeek={seek} {...laneEvents(null)}>
+              <Ruler width={laneW} px={px} bar={bar} beats={song.beats} rulerRef={ruler} onStrip={drag.strip} {...laneEvents(null)}>
                 {marks.filter(m => !m.track_id).map(m => <MarkFlag key={m.id} m={m} px={px} color={colorOfMark(m)} onOpen={openMark} onChange={changeMark} onDelete={removeMark} />)}
               </Ruler>
             </div>
@@ -393,6 +534,7 @@ export default function SongPage() {
             <div className="mark-guides" style={{ left: headW }} aria-hidden="true">
               {marks.filter(m => !m.track_id).map(m => <div key={m.id} className={`mark-guide ${m.end_ms > m.at_ms ? 'stretch' : ''}`} style={{ left: m.at_ms / 1000 * px, width: m.end_ms > m.at_ms ? (m.end_ms - m.at_ms) / 1000 * px : undefined, ['--mk' as string]: colorOfMark(m) }} />)}
             </div>
+            {sel && <SelBand className="tl-sel" left={headW + sel.a * px} width={(sel.b - sel.a) * px} onEdge={drag.edge} />}
             <Playhead player={player} playing={playing} rest={pos} px={px} headW={headW} rec={rec === 'rolling'} onLost={setLost} follow={followNow} />
           </div>
         </div>
@@ -405,7 +547,18 @@ export default function SongPage() {
       </div>}
 
       <Transport song={song} player={player} playing={playing} rec={rec} armed={tracks.find(t => t.id === armed)} rest={pos} ready={allReady} recFrom={recFrom}
-        onPlay={play} onStop={stop} onRecord={record} onStart={toStart} onClick={() => saveSong({ click: !song.click })} onNote={noteAtPlayhead} onSeek={seek} mic={mic} marks={marksRef} notes={marks} noteColor={colorOfMark} />
+        onPlay={play} onStop={stop} onRecord={record} onStart={toStart} onClick={() => saveSong({ click: !song.click })} onNote={noteAtPlayhead} onSeek={seek} mic={mic} marks={marksRef} notes={marks} noteColor={colorOfMark}>
+        {sel && <SelBar sel={sel} total={songLen} onChange={setSel} onClear={() => setSel(null)} focus={focusSel} playhead={() => (playing ? player.current?.position() ?? pos : pos)}
+          busy={job?.text && <span className="sel-busy"><Spinner size={12} />{job.text}</span>}>
+          <button type="button" className="btn sm" onClick={playPart} disabled={(rec !== 'off' || !allReady) && !partPlay} title={partPlay ? 'Stop' : loop ? 'Play the part, round and round' : 'Play the part, then stop at its end'}>
+            <Icon name={partPlay && playing ? 'square' : 'play'} size={13} className={partPlay && playing ? 'solid' : ''} />{partPlay && playing ? 'Stop' : 'Play selection'}</button>
+          <button type="button" className={`btn ghost sm ${loop ? 'active' : ''}`} onClick={() => setLoop(v => !v)} aria-pressed={loop} title="Play the part again and again until you stop it"><Icon name="repeat" size={14} />Loop</button>
+          <button type="button" className="btn sm" onClick={downloadPart} disabled={!!job} title="The part mixed down, as you hear it (WAV)">{job?.what === 'download' ? <Spinner size={12} /> : <Icon name="download" size={14} />}Download part</button>
+          <button type="button" className="btn sm" onClick={() => setMixing({ range: sel })} disabled={!!job} title="Keep the part as a mix of this song"><Icon name="mixer" size={14} />Save as a mix</button>
+          <button type="button" className="btn sm" onClick={partToIdea} disabled={!!job} title="The part mixed down, as a new idea">{job?.what === 'idea' ? <Spinner size={12} /> : <Icon name="lightbulb" size={14} />}Save as an idea</button>
+          <button type="button" className="btn sm" onClick={() => setCutAsk(sel)} disabled={!!job || busy} title="Cut the whole song down to this part">{job?.what === 'cut' ? <Spinner size={12} /> : <Icon name="scissors" size={14} />}Cut to this part</button>
+        </SelBar>}
+      </Transport>
 
       <section className="card studio-notes">
         <div className="card-head"><h3>Notes</h3></div>
@@ -424,7 +577,10 @@ export default function SongPage() {
         onClose={() => setMarkEdit(null)} onSave={v => saveMark(v, markEdit.mark)} onDelete={markEdit.mark ? () => removeMark(markEdit.mark!) : undefined}
         onPlay={sec => { if (playing) seek(sec); else playFrom(sec) }} />}
       {editing && <Modal title="Song details" onClose={() => setEditing(false)}><SongForm song={song} onSaved={s => { setSong(s); setEditing(false) }} /></Modal>}
-      {mixing && <MixDown song={song} tracks={tracks} onClose={() => setMixing(false)} />}
+      {mixing && <MixDown song={song} tracks={tracks} range={mixing.range} onClose={() => setMixing(null)} />}
+      {cutAsk && <Confirm title={`Cut “${song.title}” to ${rangeLabel(cutAsk)}?`} confirmLabel="Cut" onCancel={() => setCutAsk(null)}
+        message={<>Each track gets a new take holding just this part, picked; the older takes stay in each track’s takes.{marks.some(m => (m.end_ms > m.at_ms ? m.end_ms : m.at_ms) / 1000 < cutAsk.a || m.at_ms / 1000 > cutAsk.b) ? ' Notes outside the part are removed.' : ''}</>}
+        onConfirm={() => { const s = cutAsk; setCutAsk(null); void cutSong(s) }} />}
       {delSong && <Confirm title={`Delete “${song.title}”?`} message="Its tracks and every take go too. Mixes you made stay (under Mixes)." confirmLabel="Delete" onCancel={() => setDelSong(false)}
         onConfirm={async () => { await api.del(`${V1}/songs/${song.id}`).catch(() => {}); announceChange(); navigate('/songs') }} />}
     </div>
@@ -440,8 +596,9 @@ export function micError(e: unknown): string {
 
 // ---- the timeline ----
 
-function Ruler({ width, px, bar, beats, onSeek, onContextMenu, onHold, children }: {
-  width: number; px: number; bar: number; beats: number; onSeek: (s: number) => void
+/** The bars and beats; a click goes there, a drag sideways selects a part (`onStrip`), right-click or a long press is the notes menu. */
+function Ruler({ width, px, bar, beats, rulerRef, onStrip, onContextMenu, onHold, children }: {
+  width: number; px: number; bar: number; beats: number; rulerRef: React.Ref<HTMLDivElement>; onStrip: (e: React.PointerEvent<HTMLElement>) => void
   onContextMenu: (e: React.MouseEvent<HTMLElement>) => void; onHold: (e: React.PointerEvent<HTMLElement>) => void; children?: React.ReactNode
 }) {
   const marks = []
@@ -454,8 +611,8 @@ function Ruler({ width, px, bar, beats, onSeek, onContextMenu, onHold, children 
     marks.push(<div key={i} className={`rl-bar ${label ? 'lab' : ''}`} style={{ left: x }}>{label && <span>{i + 1}</span>}</div>)
     if (barPx / beats > 10) for (let b = 1; b < beats; b++) marks.push(<div key={`${i}.${b}`} className="rl-beat" style={{ left: x + b * barPx / beats }} />)
   }
-  return <div className="ruler" style={{ width }} onContextMenu={onContextMenu}
-    onPointerDown={e => { if (e.button !== 0) return; onHold(e); const r = e.currentTarget.getBoundingClientRect(); onSeek((e.clientX - r.left) / px) }}>{marks}{children}</div>
+  return <div ref={rulerRef} className="ruler" style={{ width }} onContextMenu={onContextMenu}
+    onPointerDown={e => { if (e.button !== 0) return; onHold(e); onStrip(e) }}>{marks}{children}</div>
 }
 
 function TrackRow({ t, tracks, headW, laneW, px, armed, recording, loading, onArm, onOpen, onMute, onSolo, onSeek, onContextMenu, onHold, children }: {
@@ -548,10 +705,10 @@ function Playhead({ player, playing, rest, px, headW, rec, onLost, follow }: {
 
 // ---- the transport ----
 
-function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, onPlay, onStop, onRecord, onStart, onClick, onNote, onSeek, mic, marks, notes, noteColor }: {
+function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, onPlay, onStop, onRecord, onStart, onClick, onNote, onSeek, mic, marks, notes, noteColor, children }: {
   song: Song; player: React.RefObject<Player | null>; playing: boolean; rec: RecState; armed?: Track; rest: number; ready: boolean; recFrom: React.RefObject<number>
   onPlay: () => void; onStop: () => void; onRecord: () => void; onStart: () => void; onClick: () => void; onNote: () => void; onSeek: (sec: number) => void
-  mic: React.RefObject<Mic | null>; marks: React.RefObject<Mark[]>; notes: Mark[]; noteColor: (m: Mark) => string
+  mic: React.RefObject<Mic | null>; marks: React.RefObject<Mark[]>; notes: Mark[]; noteColor: (m: Mark) => string; children?: React.ReactNode
 }) {
   const noteRef = useRef<HTMLDivElement>(null)
   const noteText = useRef<HTMLSpanElement>(null)
@@ -606,7 +763,7 @@ function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, on
           {tip.m.track_id && <span className="trk">{song.tracks?.find(t => t.id === tip.m.track_id)?.name}</span>}
           <span className="tp-tip-text"><b>{clock(tip.m.at_ms / 1000)}{tip.m.end_ms > tip.m.at_ms ? `–${clock(tip.m.end_ms / 1000)}` : ''}</b>{tip.m.text || 'Note'}</span>
         </div>, document.body)}
-      <div className={`transport ${recording ? 'rec' : ''} ${playing ? 'playing' : ''}`}>
+      <div className={`transport ${recording ? 'rec' : ''} ${playing ? 'playing' : ''} ${children ? 'has-sel' : ''}`}>
         {len > 0 && <div className="tp-progress" title="Click to go there" onPointerDown={e => { if (rec !== 'off') return; const r = e.currentTarget.getBoundingClientRect(); onSeek((e.clientX - r.left) / r.width * len) }}>
           <span ref={progRef} className="tp-fill" />
           {notes.filter(m => m.at_ms / 1000 < len).map(m => {
@@ -620,6 +777,7 @@ function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, on
               onPointerDown={e => { e.stopPropagation(); setTip(null); if (rec === 'off') onSeek(m.at_ms / 1000) }} />
           })}
         </div>}
+        {children}
         <div className="tp-time">
           <span ref={clockRef} className="tp-clock">0:00.0</span>
           <span className="tp-sub">bar <b ref={barRef}>1.1</b>{len > 0 && <span className="faint"> · of {clock(len, false)}</span>}</span>
@@ -772,18 +930,18 @@ function AddTrack({ intent, onClose, onAdd, songId, onImported, onRecord }: { in
 
 // ---- mixing down ----
 
-function MixDown({ song, tracks, onClose }: { song: Song; tracks: Track[]; onClose: () => void }) {
+function MixDown({ song, tracks, range, onClose }: { song: Song; tracks: Track[]; range?: Sel; onClose: () => void }) {
   const { settings } = useApp()
   const { toast } = useToast()
   const [step, setStep] = useState<'ask' | 'mixing' | 'saving' | 'done'>('ask')
-  const [name, setName] = useState(`${song.title} — mix`)
+  const [name, setName] = useState(range ? `${song.title} (${rangeLabel(range)})` : `${song.title} — mix`)
   const [mix, setMix] = useState<Mix | null>(null)
   const [pct, setPct] = useState(0)
   const heard = tracks.filter(t => audible(t, tracks) && activeTake(t))
   const go = async () => {
     try {
       setStep('mixing')
-      const r = await mixDown(song, tracks)
+      const r = await mixDown(song, tracks, range)
       setStep('saving')
       const m = await uploadAudio(`${V1}/songs/${song.id}/mixes`, r.wav, 'mix.wav', { name, duration_ms: r.ms, sample_rate: r.rate, channels: 2, peaks: peaksOf(r.channels, r.rate), tracks: r.used }, setPct) as Mix
       setMix(m)
@@ -796,9 +954,9 @@ function MixDown({ song, tracks, onClose }: { song: Song; tracks: Track[]; onClo
     try { const r = await api.post<{ text: string; url: string; mix: Mix }>(`${V1}/mixes/${mix.id}/files`); setMix(r.mix); toast(r.text) } catch (e) { toast(errMsg(e), 'err') }
   }
   return (
-    <Modal title="Mix down" onClose={onClose} size="sm">
+    <Modal title={range ? 'Mix down the part' : 'Mix down'} onClose={onClose} size="sm">
       {step === 'ask' && <div className="stack">
-        <p className="muted">The {heard.length} {heard.length === 1 ? 'track' : 'tracks'} you hear now — with their volume and balance, muted ones left out — become one stereo file (WAV).</p>
+        <p className="muted">{range ? `From ${clock(range.a)} to ${clock(range.b)}: t` : 'T'}he {heard.length} {heard.length === 1 ? 'track' : 'tracks'} you hear now — with their volume and balance, muted ones left out — become one stereo file (WAV).</p>
         <Field label="Name"><input value={name} onChange={e => setName(e.target.value)} /></Field>
         <div className="row"><button type="button" className="btn primary" onClick={go} disabled={!heard.length || !name.trim()}><Icon name="mixer" size={15} />Mix</button></div>
       </div>}
