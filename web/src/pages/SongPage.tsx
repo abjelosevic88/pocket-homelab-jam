@@ -3,6 +3,7 @@
 // Pocket Files or Pocket Music, and mixing down.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { createPortal } from 'react-dom'
 import { api, V1 } from '../lib/api'
 import { useApp } from '../lib/app-context'
 import type { Instrument, Mark, Mix, Song, Take, Track } from '../lib/types'
@@ -404,7 +405,7 @@ export default function SongPage() {
       </div>}
 
       <Transport song={song} player={player} playing={playing} rec={rec} armed={tracks.find(t => t.id === armed)} rest={pos} ready={allReady} recFrom={recFrom}
-        onPlay={play} onStop={stop} onRecord={record} onStart={toStart} onClick={() => saveSong({ click: !song.click })} onNote={noteAtPlayhead} onSeek={seek} mic={mic} marks={marksRef} />
+        onPlay={play} onStop={stop} onRecord={record} onStart={toStart} onClick={() => saveSong({ click: !song.click })} onNote={noteAtPlayhead} onSeek={seek} mic={mic} marks={marksRef} notes={marks} noteColor={colorOfMark} />
 
       <section className="card studio-notes">
         <div className="card-head"><h3>Notes</h3></div>
@@ -547,10 +548,10 @@ function Playhead({ player, playing, rest, px, headW, rec, onLost, follow }: {
 
 // ---- the transport ----
 
-function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, onPlay, onStop, onRecord, onStart, onClick, onNote, onSeek, mic, marks }: {
+function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, onPlay, onStop, onRecord, onStart, onClick, onNote, onSeek, mic, marks, notes, noteColor }: {
   song: Song; player: React.RefObject<Player | null>; playing: boolean; rec: RecState; armed?: Track; rest: number; ready: boolean; recFrom: React.RefObject<number>
   onPlay: () => void; onStop: () => void; onRecord: () => void; onStart: () => void; onClick: () => void; onNote: () => void; onSeek: (sec: number) => void
-  mic: React.RefObject<Mic | null>; marks: React.RefObject<Mark[]>
+  mic: React.RefObject<Mic | null>; marks: React.RefObject<Mark[]>; notes: Mark[]; noteColor: (m: Mark) => string
 }) {
   const noteRef = useRef<HTMLDivElement>(null)
   const noteText = useRef<HTMLSpanElement>(null)
@@ -559,6 +560,7 @@ function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, on
   const countRef = useRef<HTMLDivElement>(null)
   const meterRef = useRef<HTMLSpanElement>(null)
   const progRef = useRef<HTMLSpanElement>(null)
+  const [tip, setTip] = useState<{ m: Mark; x: number; y: number } | null>(null)
   const len = song.length_ms / 1000
   useEffect(() => {
     const show = (s: number) => {
@@ -599,9 +601,24 @@ function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, on
   return (
     <>
       <div ref={countRef} className="countin" hidden aria-live="assertive" />
+      {tip && createPortal(
+        <div className="tp-tip" style={{ left: Math.max(150, Math.min(window.innerWidth - 150, tip.x)), top: tip.y, ['--mk' as string]: noteColor(tip.m) }} role="tooltip">
+          {tip.m.track_id && <span className="trk">{song.tracks?.find(t => t.id === tip.m.track_id)?.name}</span>}
+          <span className="tp-tip-text"><b>{clock(tip.m.at_ms / 1000)}{tip.m.end_ms > tip.m.at_ms ? `–${clock(tip.m.end_ms / 1000)}` : ''}</b>{tip.m.text || 'Note'}</span>
+        </div>, document.body)}
       <div className={`transport ${recording ? 'rec' : ''} ${playing ? 'playing' : ''}`}>
         {len > 0 && <div className="tp-progress" title="Click to go there" onPointerDown={e => { if (rec !== 'off') return; const r = e.currentTarget.getBoundingClientRect(); onSeek((e.clientX - r.left) / r.width * len) }}>
-          <span ref={progRef} />
+          <span ref={progRef} className="tp-fill" />
+          {notes.filter(m => m.at_ms / 1000 < len).map(m => {
+            const stretch = m.end_ms > m.at_ms
+            const left = m.at_ms / 1000 / len * 100
+            const width = stretch ? (Math.min(m.end_ms / 1000, len) - m.at_ms / 1000) / len * 100 : 0
+            return <span key={m.id} className={`tp-tick ${stretch ? 'stretch' : ''}`} style={{ left: `${left}%`, width: stretch ? `${width}%` : undefined, ['--mk' as string]: noteColor(m) }}
+              aria-label={`${clock(m.at_ms / 1000, false)} · ${m.text.split('\n')[0] || 'Note'}`}
+              onPointerEnter={e => { const r = e.currentTarget.getBoundingClientRect(); setTip({ m, x: r.left + Math.min(r.width, 40) / 2, y: r.top }) }}
+              onPointerLeave={() => setTip(t => t?.m.id === m.id ? null : t)}
+              onPointerDown={e => { e.stopPropagation(); setTip(null); if (rec === 'off') onSeek(m.at_ms / 1000) }} />
+          })}
         </div>}
         <div className="tp-time">
           <span ref={clockRef} className="tp-clock">0:00.0</span>
