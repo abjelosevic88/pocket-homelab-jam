@@ -9,7 +9,7 @@ import { useApp } from '../lib/app-context'
 import type { Band, Idea, Instrument, Song } from '../lib/types'
 import { useOnChange, announceChange } from '../lib/data'
 import { useCrumb } from '../components/Layout'
-import { Confirm, Empty, Field, Loading, MenuButton, Modal, Spinner, useToast, errMsg } from '../components/ui'
+import { Confirm, ContextMenu, Empty, Field, Loading, MenuButton, Modal, Spinner, useContextMenu, useToast, errMsg, type MenuItem } from '../components/ui'
 import { Icon } from '../components/icons'
 import { Select } from '../components/Select'
 import { Mic, audioContext, audioSession, clock, encodeWav, levelTake, peaksBytes, peaksOf, uploadAudio } from '../lib/engine'
@@ -224,9 +224,23 @@ function IdeaRow({ x, bands, onChange, onSong }: { x: Idea; bands: Band[]; onCha
     try { await api.put(`${V1}/ideas/${x.id}`, { band_id: id }); onChange() } catch (e) { toast(errMsg(e), 'err') }
   }
   const bandColor = bands.find(b => b.id === x.band_id)?.color
+  const ctx = useContextMenu()
+  // the "…" menu; right-click on the row shows it at the pointer, with play first
+  const items = (): MenuItem[] => [
+    { label: 'Make it a song', icon: 'waveform', onSelect: onSong },
+    { label: 'Rename', icon: 'edit', onSelect: () => setEditing(true) },
+    { label: 'Band', icon: 'users', hint: x.band_name || undefined, submenu: [
+      ...bands.map(b => ({ label: b.name, checked: x.band_id === b.id, onSelect: () => void setBand(b.id) })),
+      ...(bands.length ? ['sep' as const] : []),
+      { label: 'No band', checked: !x.band_id, onSelect: () => void setBand(null) },
+    ] },
+    { label: 'Download', icon: 'download', onSelect: () => { window.location.href = `${V1}/ideas/${x.id}/audio?download=1` } },
+    'sep' as const,
+    { label: 'Delete', icon: 'trash', danger: true, onSelect: () => setDel(true) },
+  ]
 
   return (
-    <div className="list-row idea-row">
+    <div className="list-row idea-row" onContextMenu={e => { if (!editing) ctx.open(e) }}>
       <button type="button" className={`play-btn ${playing ? 'on' : ''}`} onClick={toggle} aria-label={playing ? 'Pause' : 'Play'}><Icon name={playing ? 'pause' : 'play'} size={16} /></button>
       <div className="grow min0">
         <div className="row" style={{ gap: 8 }}>
@@ -241,18 +255,9 @@ function IdeaRow({ x, bands, onChange, onSong }: { x: Idea; bands: Band[]; onCha
         <BarWave peaks={x.peaks} durationMs={x.duration_ms} time={time} live={playing} onSeek={seek} />
       </div>
       <button type="button" className="btn hide-mobile" onClick={onSong} title="Make it the first track of a new song"><Icon name="plus" size={15} />Make a song</button>
-      <MenuButton label="Idea" align="right" width={220} items={() => [
-        { label: 'Make it a song', icon: 'waveform', onSelect: onSong },
-        { label: 'Rename', icon: 'edit', onSelect: () => setEditing(true) },
-        { label: 'Band', icon: 'users', hint: x.band_name || undefined, submenu: [
-          ...bands.map(b => ({ label: b.name, checked: x.band_id === b.id, onSelect: () => void setBand(b.id) })),
-          ...(bands.length ? ['sep' as const] : []),
-          { label: 'No band', checked: !x.band_id, onSelect: () => void setBand(null) },
-        ] },
-        { label: 'Download', icon: 'download', onSelect: () => { window.location.href = `${V1}/ideas/${x.id}/audio?download=1` } },
-        'sep' as const,
-        { label: 'Delete', icon: 'trash', danger: true, onSelect: () => setDel(true) },
-      ]}><Icon name="more" size={16} /></MenuButton>
+      <MenuButton label="Idea" align="right" width={220} items={items}><Icon name="more" size={16} /></MenuButton>
+      {ctx.at && <ContextMenu at={ctx.at} width={220} onClose={ctx.close}
+        items={[{ label: playing ? 'Pause' : 'Play', icon: playing ? 'pause' : 'play', onSelect: toggle }, 'sep' as const, ...items()]} />}
       {del && <Confirm title={`Delete “${x.name}”?`} message="The recording is gone for good." confirmLabel="Delete" onCancel={() => setDel(false)}
         onConfirm={async () => { setDel(false); audio.current?.pause(); try { await api.del(`${V1}/ideas/${x.id}`) } catch (e) { toast(errMsg(e), 'err') } announceChange(); onChange() }} />}
     </div>
