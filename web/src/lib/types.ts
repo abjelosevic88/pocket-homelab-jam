@@ -40,8 +40,8 @@ export interface Song {
   track_count: number; take_count: number; length_ms: number; minutes: number; tracks?: Track[]; marks?: Mark[]
 }
 
-/** A folder for songs (the band a song is for). */
-export interface Band { id: number; name: string; color: string; notes: string; created_at: string; songs: number; updated_at: string }
+/** A folder for songs and ideas (the band a song is for). */
+export interface Band { id: number; name: string; color: string; notes: string; created_at: string; songs: number; ideas: number; updated_at: string }
 
 /** A note pinned to a moment of a song (or a stretch, when end_ms > at_ms); on one track, or the whole song when track_id is null. */
 export interface Mark { id: number; song_id: number; track_id: number | null; at_ms: number; end_ms: number; text: string; color: string; created_at: string; updated_at: string }
@@ -53,7 +53,7 @@ export interface Mix {
 
 export interface Idea {
   id: number; client_id: string; name: string; mime: string; size: number; duration_ms: number; sample_rate: number; channels: number; peaks: string
-  source: string; device: string; created_at: string
+  source: string; device: string; band_id: number | null; band_name: string; created_at: string
 }
 
 export interface Sitting { id: number; song_id: number | null; title: string; day: string; started_at: string; last_at: string; seconds: number; takes: number; sent_to: string }

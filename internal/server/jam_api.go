@@ -448,6 +448,7 @@ type audioMeta struct {
 	Tracks     int    `json:"tracks"`
 	ClientID   string `json:"client_id"`  // ideas: the device's own id
 	CreatedAt  string `json:"created_at"` // ideas: when it was recorded
+	BandID     *int64 `json:"band_id"`    // ideas: the band it is in (0 or null = none)
 }
 
 func (m *audioMeta) check() string {

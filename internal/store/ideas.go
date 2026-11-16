@@ -4,22 +4,32 @@ import "context"
 
 // ---- ideas: recordings on their own, before there is a song ----
 
-const ideaCols = `id, user_id, client_id, name, file, mime, size, duration_ms, sample_rate, channels, peaks, source, device, app, created_at`
+const ideaCols = `i.id, i.user_id, i.client_id, i.name, i.file, i.mime, i.size, i.duration_ms, i.sample_rate, i.channels, i.peaks, i.source, i.device, i.app,
+	i.band_id, COALESCE((SELECT b.name FROM bands b WHERE b.id = i.band_id), ''), i.created_at`
 
 func scanIdea(r scanner) (*Idea, error) {
 	var x Idea
-	if err := r.Scan(&x.ID, &x.UserID, &x.ClientID, &x.Name, &x.File, &x.Mime, &x.Size, &x.DurationMS, &x.SampleRate, &x.Channels, &x.Peaks, &x.Source, &x.Device, &x.App, &x.CreatedAt); err != nil {
+	if err := r.Scan(&x.ID, &x.UserID, &x.ClientID, &x.Name, &x.File, &x.Mime, &x.Size, &x.DurationMS, &x.SampleRate, &x.Channels, &x.Peaks, &x.Source, &x.Device, &x.App,
+		&x.BandID, &x.BandName, &x.CreatedAt); err != nil {
 		return nil, err
 	}
 	return &x, nil
 }
 
-// ListIdeas lists a person's ideas, newest first.
-func (s *Store) ListIdeas(ctx context.Context, uid int64, limit int) ([]Idea, error) {
+// ListIdeas lists a person's ideas, newest first; band narrows it like
+// SongFilter.Band (0 = any, -1 = ideas in no band).
+func (s *Store) ListIdeas(ctx context.Context, uid int64, band int64, limit int) ([]Idea, error) {
 	if limit <= 0 || limit > 100000 {
 		limit = 1000
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT `+ideaCols+` FROM ideas WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`, uid, limit)
+	where, args := "i.user_id = ?", []any{uid}
+	if band > 0 {
+		where += " AND i.band_id = ?"
+		args = append(args, band)
+	} else if band < 0 {
+		where += " AND i.band_id IS NULL"
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+ideaCols+` FROM ideas i WHERE `+where+` ORDER BY i.created_at DESC, i.id DESC LIMIT ?`, append(args, limit)...)
 	if err != nil {
 		return nil, err
 	}
@@ -37,7 +47,7 @@ func (s *Store) ListIdeas(ctx context.Context, uid int64, limit int) ([]Idea, er
 
 // GetIdea loads one idea.
 func (s *Store) GetIdea(ctx context.Context, uid, id int64) (*Idea, error) {
-	x, err := scanIdea(s.DB.QueryRowContext(ctx, `SELECT `+ideaCols+` FROM ideas WHERE user_id = ? AND id = ?`, uid, id))
+	x, err := scanIdea(s.DB.QueryRowContext(ctx, `SELECT `+ideaCols+` FROM ideas i WHERE i.user_id = ? AND i.id = ?`, uid, id))
 	return x, notFound(err)
 }
 
@@ -46,16 +56,16 @@ func (s *Store) IdeaByClientID(ctx context.Context, uid int64, clientID string) 
 	if clientID == "" {
 		return nil, ErrNotFound
 	}
-	x, err := scanIdea(s.DB.QueryRowContext(ctx, `SELECT `+ideaCols+` FROM ideas WHERE user_id = ? AND client_id = ?`, uid, clientID))
+	x, err := scanIdea(s.DB.QueryRowContext(ctx, `SELECT `+ideaCols+` FROM ideas i WHERE i.user_id = ? AND i.client_id = ?`, uid, clientID))
 	return x, notFound(err)
 }
 
 // CreateIdea adds an idea; ErrConflict when the person already has one with
 // that client id.
 func (s *Store) CreateIdea(ctx context.Context, x *Idea) error {
-	res, err := s.DB.ExecContext(ctx, `INSERT INTO ideas (user_id, client_id, name, file, mime, size, duration_ms, sample_rate, channels, peaks, source, device, app, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
-		x.UserID, x.ClientID, x.Name, x.File, x.Mime, x.Size, x.DurationMS, x.SampleRate, x.Channels, x.Peaks, x.Source, x.Device, x.App, x.CreatedAt)
+	res, err := s.DB.ExecContext(ctx, `INSERT INTO ideas (user_id, client_id, name, file, mime, size, duration_ms, sample_rate, channels, peaks, source, device, app, band_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
+		x.UserID, x.ClientID, x.Name, x.File, x.Mime, x.Size, x.DurationMS, x.SampleRate, x.Channels, x.Peaks, x.Source, x.Device, x.App, x.BandID, x.CreatedAt)
 	if err != nil {
 		return conflict(err)
 	}
@@ -63,9 +73,9 @@ func (s *Store) CreateIdea(ctx context.Context, x *Idea) error {
 	return nil
 }
 
-// UpdateIdea saves an idea's name.
+// UpdateIdea saves an idea's name and band.
 func (s *Store) UpdateIdea(ctx context.Context, x *Idea) error {
-	res, err := s.DB.ExecContext(ctx, `UPDATE ideas SET name = ? WHERE user_id = ? AND id = ?`, x.Name, x.UserID, x.ID)
+	res, err := s.DB.ExecContext(ctx, `UPDATE ideas SET name = ?, band_id = ? WHERE user_id = ? AND id = ?`, x.Name, x.BandID, x.UserID, x.ID)
 	return affected(res, err)
 }
 
@@ -89,9 +99,9 @@ func (s *Store) IdeaToSong(ctx context.Context, x *Idea, so *Song, t *Track) (*T
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, `INSERT INTO songs (user_id, title, artist, notes, tempo, beats, beat_unit, key_name, count_in, click, loop_start_ms, loop_end_ms, starred, color, source)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		so.UserID, so.Title, so.Artist, so.Notes, so.Tempo, so.Beats, so.BeatUnit, so.KeyName, so.CountIn, boolInt(so.Click), so.LoopStartMS, so.LoopEndMS, boolInt(so.Starred), so.Color, so.Source)
+	res, err := tx.ExecContext(ctx, `INSERT INTO songs (user_id, title, artist, notes, tempo, beats, beat_unit, key_name, count_in, click, loop_start_ms, loop_end_ms, starred, color, source, band_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		so.UserID, so.Title, so.Artist, so.Notes, so.Tempo, so.Beats, so.BeatUnit, so.KeyName, so.CountIn, boolInt(so.Click), so.LoopStartMS, so.LoopEndMS, boolInt(so.Starred), so.Color, so.Source, so.BandID)
 	if err != nil {
 		return nil, err
 	}
