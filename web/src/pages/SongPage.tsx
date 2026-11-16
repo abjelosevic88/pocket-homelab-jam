@@ -265,6 +265,11 @@ export default function SongPage() {
     setMarkEdit(null)
     try { await api.del(`${V1}/marks/${m.id}`) } catch (e) { toast(errMsg(e), 'err'); load() }
   }
+  /** Delete a note, with Undo on the toast (it comes back as it was). */
+  const removeMark = (m: Mark) => {
+    void deleteMark(m)
+    toast('Note deleted', 'ok', { label: 'Undo', run: () => { void saveMark({ text: m.text, at_ms: m.at_ms, end_ms: m.end_ms, track_id: m.track_id, color: m.color }) } })
+  }
   const openMark = (m: Mark, anchor: Anchor) => setMarkEdit({ anchor, mark: m, draft: { at_ms: m.at_ms, end_ms: m.end_ms, track_id: m.track_id } })
   const colorOfMark = (m: Mark) => markColor(m, tracks, colorOf)
   const laneEvents = (track: Track | null) => ({
@@ -368,14 +373,14 @@ export default function SongPage() {
                 <span className="muted small">{tracks.length} {tracks.length === 1 ? 'track' : 'tracks'}</span>
               </div>
               <Ruler width={laneW} px={px} bar={bar} beats={song.beats} onSeek={seek} {...laneEvents(null)}>
-                {marks.filter(m => !m.track_id).map(m => <MarkFlag key={m.id} m={m} px={px} color={colorOfMark(m)} onOpen={openMark} onChange={changeMark} />)}
+                {marks.filter(m => !m.track_id).map(m => <MarkFlag key={m.id} m={m} px={px} color={colorOfMark(m)} onOpen={openMark} onChange={changeMark} onDelete={removeMark} />)}
               </Ruler>
             </div>
             {tracks.map(t => (
               <TrackRow key={t.id} t={t} tracks={tracks} headW={headW} laneW={laneW} px={px} armed={armed === t.id} recording={rec === 'rolling' && armed === t.id}
                 loading={!!activeTake(t) && !ready[activeTake(t)!.id]} onArm={() => !busy && setArmed(armed === t.id ? null : t.id)} onOpen={() => setSheet(t.id)}
                 onMute={() => saveTrack(t, { muted: !t.muted })} onSolo={() => saveTrack(t, { solo: !t.solo })} onSeek={seek} {...laneEvents(t)}>
-                {marks.filter(m => m.track_id === t.id).map(m => <MarkFlag key={m.id} m={m} px={px} color={colorOfMark(m)} onOpen={openMark} onChange={changeMark} />)}
+                {marks.filter(m => m.track_id === t.id).map(m => <MarkFlag key={m.id} m={m} px={px} color={colorOfMark(m)} onOpen={openMark} onChange={changeMark} onDelete={removeMark} />)}
               </TrackRow>
             ))}
             <div className="tl-row">
@@ -399,13 +404,13 @@ export default function SongPage() {
       </div>}
 
       <Transport song={song} player={player} playing={playing} rec={rec} armed={tracks.find(t => t.id === armed)} rest={pos} ready={allReady} recFrom={recFrom}
-        onPlay={play} onStop={stop} onRecord={record} onStart={toStart} onClick={() => saveSong({ click: !song.click })} mic={mic} marks={marksRef} />
+        onPlay={play} onStop={stop} onRecord={record} onStart={toStart} onClick={() => saveSong({ click: !song.click })} onNote={noteAtPlayhead} onSeek={seek} mic={mic} marks={marksRef} />
 
       <section className="card studio-notes">
         <div className="card-head"><h3>Notes</h3></div>
         <div className="mark-sec">
           <h4 className="muted small">On the timeline{marks.length ? ` · ${marks.length}` : ''}</h4>
-          <MarkList marks={marks} tracks={tracks} tempo={song.tempo} beats={song.beats} colorOf={colorOfMark} onSeek={seek} onOpen={openMark} />
+          <MarkList marks={marks} tracks={tracks} tempo={song.tempo} beats={song.beats} colorOf={colorOfMark} onSeek={seek} onOpen={openMark} onDelete={removeMark} />
         </div>
         <NotesBox key={song.id} value={song.notes} onSave={v => saveSong({ notes: v })} />
       </section>
@@ -415,7 +420,7 @@ export default function SongPage() {
       {adding && <AddTrack intent={adding.intent} onClose={() => setAdding(null)} onAdd={addTrack} songId={sid} onImported={async kid => { setReady(r => ({ ...r, [kid]: true })); await load(); announceChange() }} onRecord={() => { setAdding(null); setTimeout(() => void record(), 50) }} />}
       {ctxMenu && <ContextMenu at={ctxMenu} items={ctxItems(ctxMenu)} onClose={() => setCtxMenu(null)} width={250} />}
       {markEdit && <MarkEditor key={markEdit.mark?.id ?? 'new'} anchor={markEdit.anchor} mark={markEdit.mark} draft={markEdit.draft} tracks={tracks} tempo={song.tempo} beats={song.beats}
-        onClose={() => setMarkEdit(null)} onSave={v => saveMark(v, markEdit.mark)} onDelete={markEdit.mark ? () => deleteMark(markEdit.mark!) : undefined}
+        onClose={() => setMarkEdit(null)} onSave={v => saveMark(v, markEdit.mark)} onDelete={markEdit.mark ? () => removeMark(markEdit.mark!) : undefined}
         onPlay={sec => { if (playing) seek(sec); else playFrom(sec) }} />}
       {editing && <Modal title="Song details" onClose={() => setEditing(false)}><SongForm song={song} onSaved={s => { setSong(s); setEditing(false) }} /></Modal>}
       {mixing && <MixDown song={song} tracks={tracks} onClose={() => setMixing(false)} />}
@@ -542,20 +547,24 @@ function Playhead({ player, playing, rest, px, headW, rec, onLost, follow }: {
 
 // ---- the transport ----
 
-function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, onPlay, onStop, onRecord, onStart, onClick, mic, marks }: {
+function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, onPlay, onStop, onRecord, onStart, onClick, onNote, onSeek, mic, marks }: {
   song: Song; player: React.RefObject<Player | null>; playing: boolean; rec: RecState; armed?: Track; rest: number; ready: boolean; recFrom: React.RefObject<number>
-  onPlay: () => void; onStop: () => void; onRecord: () => void; onStart: () => void; onClick: () => void; mic: React.RefObject<Mic | null>
-  marks: React.RefObject<Mark[]>
+  onPlay: () => void; onStop: () => void; onRecord: () => void; onStart: () => void; onClick: () => void; onNote: () => void; onSeek: (sec: number) => void
+  mic: React.RefObject<Mic | null>; marks: React.RefObject<Mark[]>
 }) {
   const noteRef = useRef<HTMLDivElement>(null)
+  const noteText = useRef<HTMLSpanElement>(null)
   const clockRef = useRef<HTMLSpanElement>(null)
-  const barRef = useRef<HTMLSpanElement>(null)
+  const barRef = useRef<HTMLElement>(null)
   const countRef = useRef<HTMLDivElement>(null)
   const meterRef = useRef<HTMLSpanElement>(null)
+  const progRef = useRef<HTMLSpanElement>(null)
+  const len = song.length_ms / 1000
   useEffect(() => {
     const show = (s: number) => {
       if (clockRef.current) clockRef.current.textContent = clock(Math.max(0, s))
       if (barRef.current) barRef.current.textContent = barBeat(Math.max(0, s), song.tempo, song.beats)
+      if (progRef.current && len > 0) progRef.current.style.transform = `scaleX(${Math.min(1, Math.max(0, s / len))})`
       const c = countRef.current
       if (c) {
         const left = recFrom.current - s
@@ -563,12 +572,12 @@ function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, on
       }
       // the note you're at: a stretch while it lasts, a moment for 4 seconds
       const n = noteRef.current
-      if (n) {
+      if (n && noteText.current) {
         const ms = s * 1000
         let cur: Mark | undefined
         for (const m of marks.current) if (m.text && m.at_ms <= ms && ms < (m.end_ms > m.at_ms ? m.end_ms : m.at_ms + 4000)) cur = m
         const txt = cur ? cur.text.split('\n')[0] : ''
-        if (n.textContent !== txt) n.textContent = txt
+        if (noteText.current.textContent !== txt) noteText.current.textContent = txt
         n.hidden = !txt
       }
     }
@@ -581,25 +590,36 @@ function Transport({ song, player, playing, rec, armed, rest, ready, recFrom, on
     }
     raf = requestAnimationFrame(frame)
     return () => cancelAnimationFrame(raf)
-  }, [playing, rest, rec, song.tempo, song.beats, player, mic, recFrom, marks])
+  }, [playing, rest, rec, song.tempo, song.beats, player, mic, recFrom, marks, len])
   const recording = rec === 'rolling'
+  const status = recording ? <span className="tp-rec"><span className="tp-rec-dot" />Recording {armed?.name}</span>
+    : rec === 'saving' ? <span className="tp-rec saving"><Spinner size={10} /> Keeping the take…</span>
+    : rec === 'opening' ? <span>Opening the microphone…</span>
+    : armed ? <span className="ellipsis">Records on <b>{armed.name}</b></span> : null
   return (
     <>
       <div ref={countRef} className="countin" hidden aria-live="assertive" />
-      <div className={`transport ${recording ? 'rec' : ''}`}>
+      <div className={`transport ${recording ? 'rec' : ''} ${playing ? 'playing' : ''}`}>
+        {len > 0 && <div className="tp-progress" title="Click to go there" onPointerDown={e => { if (rec !== 'off') return; const r = e.currentTarget.getBoundingClientRect(); onSeek((e.clientX - r.left) / r.width * len) }}>
+          <span ref={progRef} />
+        </div>}
         <div className="tp-time">
           <span ref={clockRef} className="tp-clock">0:00.0</span>
-          <span className="tp-sub"><span ref={barRef}>1.1</span>{recording ? <span className="tp-rec">● REC {armed?.name}</span> : rec === 'saving' ? <span className="tp-rec saving"><Spinner size={10} /> Keeping the take…</span> : rec === 'opening' ? <span className="muted">Opening the microphone…</span> : armed ? <span className="muted ellipsis">Records on {armed.name}</span> : null}</span>
+          <span className="tp-sub">bar <b ref={barRef}>1.1</b>{len > 0 && <span className="faint"> · of {clock(len, false)}</span>}</span>
           {recording && <span className="tp-meter"><span ref={meterRef} /></span>}
         </div>
-        <div ref={noteRef} className="tp-note ellipsis" hidden aria-live="polite" />
         <div className="tp-btns">
+          <button type="button" className={`tp-btn sm ${song.click ? 'lit' : ''}`} onClick={onClick} title={song.click ? 'Click on while recording (C)' : 'Click off (C) — the count-in still clicks'} aria-pressed={song.click} aria-label="Click"><Icon name="metronome" size={18} /></button>
           <button type="button" className="tp-btn" onClick={onStart} disabled={rec !== 'off'} title="To the start (0)" aria-label="To the start"><Icon name="skip-back" size={20} className="solid" /></button>
           {playing || recording
             ? <button type="button" className="tp-btn tp-play" onClick={onStop} title="Stop (space)" aria-label="Stop"><Icon name="square" size={18} className="solid" /></button>
-            : <button type="button" className="tp-btn tp-play" onClick={onPlay} disabled={rec !== 'off' || !ready} title={ready ? 'Play (space)' : 'Loading the takes…'} aria-label="Play">{ready ? <Icon name="play" size={22} className="play" /> : <Spinner size={18} />}</button>}
-          <button type="button" className={`tp-btn recbtn ${recording ? 'on' : ''}`} onClick={recording ? onStop : onRecord} disabled={rec === 'saving' || rec === 'opening' || (playing && !recording) || !ready} title="Record (R)" aria-label={recording ? 'Stop recording' : 'Record'}><Icon name="record" size={22} /></button>
-          <button type="button" className={`tp-btn ${song.click ? 'lit' : ''}`} onClick={onClick} title={song.click ? 'Click on while recording (C)' : 'Click off (C) — the count-in still clicks'} aria-pressed={song.click} aria-label="Click"><Icon name="metronome" size={20} /></button>
+            : <button type="button" className="tp-btn tp-play" onClick={onPlay} disabled={rec !== 'off' || !ready} title={ready ? 'Play (space)' : 'Loading the takes…'} aria-label="Play">{ready ? <Icon name="play" size={24} className="play" /> : <Spinner size={18} />}</button>}
+          <button type="button" className={`tp-btn recbtn ${recording ? 'on' : ''}`} onClick={recording ? onStop : onRecord} disabled={rec === 'saving' || rec === 'opening' || (playing && !recording) || !ready} title="Record (R)" aria-label={recording ? 'Stop recording' : 'Record'}><Icon name="record" size={20} /></button>
+          <button type="button" className="tp-btn sm" onClick={onNote} title="A note on the timeline, here (M)" aria-label="Add a note here"><Icon name="flag" size={17} /></button>
+        </div>
+        <div className="tp-side">
+          <div ref={noteRef} className="tp-note" hidden aria-live="polite"><Icon name="flag" size={13} /><span ref={noteText} className="ellipsis" /></div>
+          <div className="tp-status">{status}<span className="tp-tempo">{Math.round(song.tempo * 10) / 10} bpm · {song.beats}/{song.beat_unit}</span></div>
         </div>
       </div>
     </>

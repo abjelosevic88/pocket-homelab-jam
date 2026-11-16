@@ -6,7 +6,6 @@ import { useEffect, useRef, useState } from 'react'
 import type { Mark, Track } from '../lib/types'
 import { barBeat, clock } from '../lib/engine'
 import { Popover, rectOf, type Anchor } from './ui'
-import { Select } from './Select'
 import { Icon } from './icons'
 
 export const SONG_MARK = '#7048e8'
@@ -53,9 +52,9 @@ export const markColor = (m: Mark, tracks: Track[], trackColor: (t: Track) => st
 }
 
 /** One note on the timeline: a flag on the ruler (whole song) or a pin in a lane (a track). */
-export function MarkFlag({ m, px, color, onOpen, onChange }: {
+export function MarkFlag({ m, px, color, onOpen, onChange, onDelete }: {
   m: Mark; px: number; color: string
-  onOpen: (m: Mark, a: Anchor) => void; onChange: (m: Mark, patch: Partial<Mark>) => void
+  onOpen: (m: Mark, a: Anchor) => void; onChange: (m: Mark, patch: Partial<Mark>) => void; onDelete: (m: Mark) => void
 }) {
   const [drag, setDrag] = useState<{ dx: number; end: boolean } | null>(null)
   const start = (e: React.PointerEvent, end: boolean) => {
@@ -99,8 +98,11 @@ export function MarkFlag({ m, px, color, onOpen, onChange }: {
   return (
     <div className={`mark ${stretch ? 'stretch' : ''} ${drag ? 'dragging' : ''}`} style={{ left, width: stretch ? width : undefined, ['--mk' as string]: color }}>
       {stretch && <div className="mark-band" />}
-      <button type="button" className="mark-flag" onPointerDown={e => start(e, false)} onContextMenu={e => { e.preventDefault(); e.stopPropagation(); onOpen(m, rectOf(e.currentTarget)) }} title={`${m.text || 'Note'} — drag to move, click to edit`}
-        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(m, rectOf(e.currentTarget)) } }}>
+      <button type="button" className="mark-flag" onPointerDown={e => start(e, false)} onContextMenu={e => { e.preventDefault(); e.stopPropagation(); onOpen(m, rectOf(e.currentTarget)) }} title={`${m.text || 'Note'} — drag to move, click to edit or delete`}
+        onKeyDown={e => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(m, rectOf(e.currentTarget)) }
+          else if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); e.stopPropagation(); onDelete(m) }
+        }}>
         <span className="ellipsis">{label}</span>
       </button>
       {stretch && <span className="mark-end" onPointerDown={e => start(e, true)} title="Drag to make it longer or shorter" />}
@@ -141,7 +143,10 @@ export function MarkEditor({ anchor, mark, draft, tracks, tempo, beats, onClose,
           <label><span className="muted small">Until</span><input value={until} onChange={e => setUntil(e.target.value)} inputMode="decimal" placeholder="optional" aria-label="Until" className={untilS === null || (!!untilS && atS !== null && untilS <= atS) ? 'invalid' : ''} /></label>
           {atS !== null && <span className="muted small mark-bar">bar {barBeat(atS, tempo, beats)}</span>}
         </div>
-        <Select ariaLabel="On" value={track} onChange={setTrack} placeholder="The whole song" clearLabel="The whole song" options={tracks.map(t => ({ value: String(t.id), label: t.name }))} />
+        <div className="mark-on" role="radiogroup" aria-label="On">
+          <button type="button" role="radio" aria-checked={!track} className={`mark-on-btn ${!track ? 'on' : ''}`} onClick={() => setTrack('')}>The whole song</button>
+          {tracks.map(t => <button key={t.id} type="button" role="radio" aria-checked={track === String(t.id)} className={`mark-on-btn ${track === String(t.id) ? 'on' : ''}`} onClick={() => setTrack(String(t.id))}>{t.name}</button>)}
+        </div>
         <div className="swatches sm">
           <button type="button" className={`swatch none ${!color ? 'on' : ''}`} onClick={() => setColor('')} aria-label="Usual colour" title="Usual colour (the track's)" />
           {MARK_COLORS.map(c => <button key={c} type="button" className={`swatch ${color === c ? 'on' : ''}`} style={{ background: c }} onClick={() => setColor(c)} aria-label={c} />)}
@@ -150,7 +155,7 @@ export function MarkEditor({ anchor, mark, draft, tracks, tempo, beats, onClose,
           <button type="submit" className="btn primary sm" disabled={bad || busy}>{mark ? 'Save' : 'Add the note'}</button>
           {atS !== null && <button type="button" className="btn ghost sm" onClick={() => { onPlay(atS); onClose() }} title="Play from here"><Icon name="play" size={13} />Play from here</button>}
           <span className="grow" />
-          {onDelete && <button type="button" className="btn ghost sm danger icon-only" onClick={onDelete} title="Delete the note" aria-label="Delete the note"><Icon name="trash" size={14} /></button>}
+          {onDelete && <button type="button" className="btn ghost sm danger" onClick={onDelete} title="Delete the note"><Icon name="trash" size={14} />Delete</button>}
         </div>
       </form>
     </Popover>
@@ -158,9 +163,9 @@ export function MarkEditor({ anchor, mark, draft, tracks, tempo, beats, onClose,
 }
 
 /** Every note in time order, under the song: click the time to go there. */
-export function MarkList({ marks, tracks, tempo, beats, colorOf, onSeek, onOpen }: {
+export function MarkList({ marks, tracks, tempo, beats, colorOf, onSeek, onOpen, onDelete }: {
   marks: Mark[]; tracks: Track[]; tempo: number; beats: number; colorOf: (m: Mark) => string
-  onSeek: (sec: number) => void; onOpen: (m: Mark, a: Anchor) => void
+  onSeek: (sec: number) => void; onOpen: (m: Mark, a: Anchor) => void; onDelete: (m: Mark) => void
 }) {
   if (!marks.length) return <p className="muted small mark-empty">Right-click the timeline (press and hold on a phone) or press <kbd>M</kbd> while it plays to pin a note to that moment.</p>
   return (
@@ -176,6 +181,7 @@ export function MarkList({ marks, tracks, tempo, beats, colorOf, onSeek, onOpen 
               {t && <span className="mark-trk">{t.name}</span>}
               <span>{m.text || <i className="muted">No words</i>}</span>
             </button>
+            <button type="button" className="btn ghost icon-only xs mark-del" onClick={() => onDelete(m)} title="Delete the note" aria-label="Delete the note"><Icon name="trash" size={13} /></button>
           </li>
         )
       })}
