@@ -512,20 +512,22 @@ export async function uploadAudio(url: string, file: Blob, name: string, meta: R
 
 // ---- mixing down ----
 
-/** Renders the heard tracks to stereo at 44.1 kHz, peaks kept under 0 dB. */
-export async function mixDown(song: Song, tracks: Track[]): Promise<{ wav: Blob; channels: Float32Array[]; rate: number; ms: number; used: number }> {
+/** Renders the heard tracks to stereo at 44.1 kHz, peaks kept under 0 dB; `range` (seconds of the song) renders just that part. */
+export async function mixDown(song: Song, tracks: Track[], range?: { a: number; b: number }): Promise<{ wav: Blob; channels: Float32Array[]; rate: number; ms: number; used: number }> {
   const rate = 44100
-  const heard = tracks.filter(t => audible(t, tracks) && activeTake(t))
+  const from = range ? range.a : 0
+  let heard = tracks.filter(t => audible(t, tracks) && activeTake(t))
   for (const t of heard) await loadTake(activeTake(t)!.id)
+  if (range) heard = heard.filter(t => { const k = activeTake(t)!, off = k.offset_ms / 1000; return off < range.b && off + buffers.get(k.id)!.duration > range.a })
   let end = 0
   for (const t of heard) {
     const k = activeTake(t)!
     const b = buffers.get(k.id)!
     end = Math.max(end, k.offset_ms / 1000 + b.duration)
   }
-  if (end <= 0) throw new Error('Nothing to mix: record something first (or unmute a track)')
+  if (end <= 0) throw new Error(range ? 'Nothing is heard in this part' : 'Nothing to mix: record something first (or unmute a track)')
   const OC = window.OfflineAudioContext || (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext }).webkitOfflineAudioContext
-  const oc = new OC(2, Math.ceil((end + 0.2) * rate), rate)
+  const oc = new OC(2, Math.max(1, Math.ceil(range ? (range.b - range.a) * rate : (end + 0.2) * rate)), rate)
   for (const t of heard) {
     const k = activeTake(t)!
     const src = oc.createBufferSource()
@@ -535,7 +537,7 @@ export async function mixDown(song: Song, tracks: Track[]): Promise<{ wav: Blob;
     const p = oc.createStereoPanner()
     p.pan.value = t.pan / 100
     src.connect(g).connect(p).connect(oc.destination)
-    const off = k.offset_ms / 1000
+    const off = k.offset_ms / 1000 - from
     if (off >= 0) src.start(off, 0)
     else src.start(0, -off)
   }
