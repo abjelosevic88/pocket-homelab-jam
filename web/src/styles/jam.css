@@ -388,3 +388,4 @@ input[type=range] { accent-color: var(--accent); }
 .idea-meter { display: block; height: 4px; margin-top: 8px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
 .idea-meter > span { display: block; height: 100%; background: linear-gradient(90deg, #2f9e44, #f59f00 80%, #e5484d); transform-origin: left; transform: scaleX(0); }
 @media (prefers-reduced-motion: reduce) { .idea-rec.on .idea-rec-dot { animation: none; } }
+.tl-follow { gap: 4px; font-size: 12px; }

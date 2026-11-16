@@ -233,6 +233,8 @@ export default function SongPage() {
 
   // ---- the timeline's size ----
   const scroller = useRef<HTMLDivElement>(null)
+  const [lost, setLost] = useState(false) // you scrolled away from the playing playhead
+  const followNow = useRef<() => void>(() => {})
   const headW = mobile ? 112 : 196
   const [viewW, setViewW] = useState(600)
   useLayoutEffect(() => {
@@ -281,6 +283,7 @@ export default function SongPage() {
 
       <div className="tl-wrap">
         <div className="tl-zoom">
+          {lost && <button type="button" className="btn ghost sm tl-follow" title="Back to the playhead" onClick={() => followNow.current()}><Icon name="target" size={14} />Follow</button>}
           <button type="button" className="btn ghost icon-only sm" title="Zoom out" aria-label="Zoom out" onClick={() => setPx(p => Math.max(6, (p || 40) / 1.5))}><Icon name="minus" size={15} /></button>
           <button type="button" className="btn ghost icon-only sm" title="Zoom in" aria-label="Zoom in" onClick={() => setPx(p => Math.min(400, (p || 40) * 1.5))}><Icon name="plus" size={15} /></button>
         </div>
@@ -303,7 +306,7 @@ export default function SongPage() {
               </div>
               <div className="lane lane-empty" style={{ width: laneW }} />
             </div>
-            <Playhead player={player} playing={playing} rest={pos} px={px} headW={headW} rec={rec === 'rolling'} />
+            <Playhead player={player} playing={playing} rest={pos} px={px} headW={headW} rec={rec === 'rolling'} onLost={setLost} follow={followNow} />
           </div>
         </div>
       </div>
@@ -387,8 +390,13 @@ function TrackRow({ t, tracks, headW, laneW, px, armed, recording, loading, onAr
   )
 }
 
-/** The line where the song is, moving while it plays (its own frames). */
-function Playhead({ player, playing, rest, px, headW, rec }: { player: React.RefObject<Player | null>; playing: boolean; rest: number; px: number; headW: number; rec: boolean }) {
+/** The line where the song is, moving while it plays (its own frames). The view turns the page when the line reaches the edge,
+ * but once you scroll the timeline yourself it lets you look around: it follows again when the line is back in view (and you've
+ * stopped scrolling), on Play or a seek, or with the Follow button. */
+function Playhead({ player, playing, rest, px, headW, rec, onLost, follow }: {
+  player: React.RefObject<Player | null>; playing: boolean; rest: number; px: number; headW: number; rec: boolean
+  onLost: (lost: boolean) => void; follow: React.RefObject<() => void>
+}) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = ref.current
@@ -397,18 +405,42 @@ function Playhead({ player, playing, rest, px, headW, rec }: { player: React.Ref
     if (!playing) { place(rest); return }
     let raf = 0
     const scroller = el.closest('.tl') as HTMLElement | null
+    let expected = scroller?.scrollLeft ?? 0 // where we last put the view; anything else is the user
+    let free = false
+    let userAt = 0
+    let lost = false
+    const setLost = (v: boolean) => { if (v !== lost) { lost = v; onLost(v) } }
+    const onScroll = () => {
+      if (!scroller || Math.abs(scroller.scrollLeft - expected) <= 2) return
+      free = true
+      userAt = performance.now()
+      expected = scroller.scrollLeft
+    }
+    scroller?.addEventListener('scroll', onScroll, { passive: true })
+    follow.current = () => { free = false }
     const frame = () => {
       const s = player.current?.position() ?? rest
       place(s)
       if (scroller && s > 0) {
         const x = headW + s * px
-        if (x > scroller.scrollLeft + scroller.clientWidth - 30 || x < scroller.scrollLeft + headW) scroller.scrollLeft = x - headW - (scroller.clientWidth - headW) * 0.2
+        const inView = x >= scroller.scrollLeft + headW && x <= scroller.scrollLeft + scroller.clientWidth - 30
+        if (free && inView && performance.now() - userAt > 1200) free = false
+        if (!free && !inView) {
+          scroller.scrollLeft = x - headW - (scroller.clientWidth - headW) * 0.2
+          expected = scroller.scrollLeft
+        }
+        setLost(free && !inView)
       }
       raf = requestAnimationFrame(frame)
     }
     raf = requestAnimationFrame(frame)
-    return () => cancelAnimationFrame(raf)
-  }, [playing, rest, px, headW, player])
+    return () => {
+      cancelAnimationFrame(raf)
+      scroller?.removeEventListener('scroll', onScroll)
+      follow.current = () => {}
+      setLost(false)
+    }
+  }, [playing, rest, px, headW, player, onLost, follow])
   return <div ref={ref} className={`playhead ${rec ? 'rec' : ''}`} />
 }
 
