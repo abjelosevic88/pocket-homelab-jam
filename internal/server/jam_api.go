@@ -260,6 +260,10 @@ func (s *Server) handleOrder(w http.ResponseWriter, r *http.Request) {
 		pos[id] = i
 	}
 	moved := false
+	was := make([]int64, len(tracks))
+	for i, t := range tracks {
+		was[i] = t.ID
+	}
 	for i := range tracks {
 		t := &tracks[i]
 		p, ok := pos[t.ID]
@@ -276,7 +280,7 @@ func (s *Server) handleOrder(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if moved {
-		s.note(ctx, uid, songID, change{kind: "track", key: "song:" + itoa(songID) + ":order", text: "Changed the order of the tracks"})
+		s.note(ctx, uid, songID, change{kind: "track", key: "song:" + itoa(songID) + ":order", text: "Changed the order of the tracks"}.with(call("PUT", "/songs/"+itoa(songID)+"/order", map[string]any{"ids": was})))
 	}
 	out, err := s.store.SongWithTracks(ctx, uid, songID)
 	if err != nil {
@@ -390,7 +394,7 @@ func (s *Server) handleCreateTrack(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "save track")
 		return
 	}
-	s.note(ctx, uid, so.ID, change{kind: "track", text: "Added the track " + quoteText(t.Name, 60)})
+	s.note(ctx, uid, so.ID, change{kind: "track", text: "Added the track " + quoteText(t.Name, 60)}.with(call("DELETE", "/tracks/"+itoa(t.ID), nil)))
 	out, _ := s.store.GetTrack(ctx, uid, t.ID)
 	writeJSON(w, http.StatusCreated, out)
 }
@@ -427,12 +431,13 @@ func (s *Server) handleUpdateTrack(w http.ResponseWriter, r *http.Request) {
 	s.trackChanges(ctx, uid, &was, t)
 	if in.TakeID != nil {
 		k, _ := s.store.GetTake(ctx, uid, *in.TakeID)
+		before := s.statesOn(ctx, uid, t.ID)
 		if err := s.store.PickTake(ctx, uid, *in.TakeID); err != nil {
 			s.fail(w, err, "take")
 			return
 		}
 		if k != nil && !k.Plays {
-			s.note(ctx, uid, t.SongID, change{kind: "take", text: fmt.Sprintf("%s: take %d plays now", t.Name, k.Number)})
+			s.note(ctx, uid, t.SongID, change{kind: "take", text: fmt.Sprintf("%s: take %d plays now", t.Name, k.Number)}.with(takesBack(before)))
 		}
 	}
 	out, _ := s.store.GetTrack(ctx, uid, t.ID)
@@ -443,6 +448,10 @@ func (s *Server) handleDeleteTrack(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	uid := actorID(ctx)
 	t, _ := s.store.GetTrack(ctx, uid, idParam(r, "id"))
+	var snap *store.Snapshot
+	if t != nil {
+		snap = s.trackSnapshot(ctx, uid, t)
+	}
 	files, err := s.store.DeleteTrack(ctx, uid, idParam(r, "id"))
 	if err != nil {
 		s.fail(w, err, "delete track")
@@ -455,9 +464,9 @@ func (s *Server) handleDeleteTrack(w http.ResponseWriter, r *http.Request) {
 		} else if n > 1 {
 			text += fmt.Sprintf(" (%d takes)", n)
 		}
-		s.note(ctx, uid, t.SongID, change{kind: "track", text: text})
+		s.note(ctx, uid, t.SongID, change{kind: "track", text: text}.with(undoOp{Restore: snap}))
 	}
-	s.dropMedia(ctx, files...)
+	s.trashMedia(ctx, uid, files...)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -635,6 +644,7 @@ func (s *Server) handleCreateTake(w http.ResponseWriter, r *http.Request) {
 			mode = store.PartAuto // recorded over a part: another attempt at it
 		}
 	}
+	before := s.statesOn(ctx, uid, t.ID)
 	if err := s.store.CreateTake(ctx, k, mode, meta.PartID); err != nil {
 		_ = os.Remove(s.mediaPath(rel))
 		s.fail(w, err, "save take")
@@ -653,7 +663,7 @@ func (s *Server) handleCreateTake(w http.ResponseWriter, r *http.Request) {
 		default:
 			text = fmt.Sprintf("Added take %d on %s at %s (%s long)", k.Number, t.Name, clockText(k.OffsetMS), long)
 		}
-		s.note(ctx, uid, t.SongID, change{kind: "take", text: text})
+		s.note(ctx, uid, t.SongID, change{kind: "take", text: text}.with(call("DELETE", "/takes/"+itoa(k.ID), nil), takesBack(before)))
 	}
 	if meta.Source == "recorded" {
 		if so, err := s.store.GetSong(ctx, uid, t.SongID); err == nil {
@@ -701,6 +711,7 @@ func (s *Server) handleUpdateTake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	was := *k
+	before := s.statesOn(ctx, uid, k.TrackID)
 	if in.TrackID != nil && *in.TrackID != k.TrackID {
 		// onto another track: the whole part goes (older clients); offset_ms then shifts the part
 		var shift int64
@@ -744,7 +755,7 @@ func (s *Server) handleUpdateTake(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "save take")
 		return
 	}
-	s.takeChanges(ctx, uid, &was, k)
+	s.takeChanges(ctx, uid, &was, k, before)
 	writeJSON(w, http.StatusOK, k)
 }
 
@@ -781,8 +792,10 @@ func (s *Server) handleDeleteTake(w http.ResponseWriter, r *http.Request) {
 	uid := actorID(ctx)
 	k, _ := s.store.GetTake(ctx, uid, idParam(r, "id"))
 	name := ""
+	var before []store.TakeState
 	if k != nil {
 		name = s.trackName(ctx, uid, k.TrackID)
+		before = s.statesOn(ctx, uid, k.TrackID)
 	}
 	file, err := s.store.DeleteTake(ctx, uid, idParam(r, "id"))
 	if err != nil {
@@ -790,9 +803,10 @@ func (s *Server) handleDeleteTake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if k != nil {
-		s.note(ctx, uid, k.SongID, change{kind: "take", text: fmt.Sprintf("Deleted take %d from %s (it was at %s)", k.Number, name, clockText(k.OffsetMS))})
+		s.note(ctx, uid, k.SongID, change{kind: "take", text: fmt.Sprintf("Deleted take %d from %s (it was at %s)", k.Number, name, clockText(k.OffsetMS))}.
+			with(undoOp{Restore: &store.Snapshot{Takes: []store.SnapTake{{Take: *k, F: k.File}}}}, takesBack(before)))
 	}
-	s.dropMedia(ctx, file)
+	s.trashMedia(ctx, uid, file)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -902,7 +916,7 @@ func (s *Server) handleCreateMix(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "save mix")
 		return
 	}
-	s.note(ctx, uid, so.ID, change{kind: "mix", text: "Mixed it down: " + quoteText(m.Name, 80)})
+	s.note(ctx, uid, so.ID, change{kind: "mix", text: "Mixed it down: " + quoteText(m.Name, 80)}.with(call("DELETE", "/mixes/"+itoa(m.ID), nil)))
 	out, _ := s.store.GetMix(ctx, uid, m.ID)
 	s.publish(ctx, uid, "jam.mix_made", fmt.Sprintf("mix:%d", m.ID), map[string]any{"id": m.ID, "name": m.Name, "song_id": so.ID, "song": so.Title, "duration_ms": m.DurationMS, "url": s.link("/mixes")})
 	writeJSON(w, http.StatusCreated, out)
@@ -959,9 +973,13 @@ func (s *Server) handleDeleteMix(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if m != nil && m.SongID != nil {
-		s.note(ctx, uid, *m.SongID, change{kind: "mix", text: "Deleted the mix " + quoteText(m.Name, 80)})
+		s.note(ctx, uid, *m.SongID, change{kind: "mix", text: "Deleted the mix " + quoteText(m.Name, 80)}.with(undoOp{Restore: &store.Snapshot{Mixes: []store.SnapMix{{Mix: *m, F: m.File}}}}))
 	}
-	s.dropMedia(ctx, file)
+	if m != nil && m.SongID != nil {
+		s.trashMedia(ctx, uid, file)
+	} else {
+		s.dropMedia(ctx, file)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

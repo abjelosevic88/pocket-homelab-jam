@@ -5,9 +5,9 @@ import { Empty, Loading, Modal, Spinner, errMsg } from './ui'
 import { Icon } from './icons'
 import { fmtDate, fmtISOTime, todayISO, addDays } from '../lib/format'
 
-export interface SongEvent { id: number; song_id: number; at: string; kind: string; text: string; via: string }
+export interface SongEvent { id: number; song_id: number; at: string; kind: string; text: string; via: string; can_undo: boolean; undone_by: number; ref: number }
 
-const ICON: Record<string, string> = { song: 'edit', track: 'layers', take: 'mic', part: 'move', mixer: 'sliders', note: 'pin', mix: 'mixer', group: 'scissors' }
+const ICON: Record<string, string> = { song: 'edit', track: 'layers', take: 'mic', part: 'move', mixer: 'sliders', note: 'pin', mix: 'mixer', group: 'scissors', undo: 'undo', redo: 'repeat' }
 
 /** The local day of a time, YYYY-MM-DD. */
 function dayOf(iso: string): string {
@@ -21,7 +21,9 @@ function dayLabel(d: string): string {
   return fmtDate(d, d.slice(0, 4) !== today.slice(0, 4))
 }
 
-export function HistorySheet({ songId, title, onClose }: { songId: number; title: string; onClose: () => void }) {
+/** onChanged: an undo changed the song (reload it). */
+export function HistorySheet({ songId, title, onClose, onChanged }: { songId: number; title: string; onClose: () => void; onChanged: () => Promise<void> | void }) {
+  const [busy, setBusy] = useState(0)
   const [events, setEvents] = useState<SongEvent[] | null>(null)
   const [more, setMore] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -36,6 +38,17 @@ export function HistorySheet({ songId, title, onClose }: { songId: number; title
     } catch (e) { setErr(errMsg(e)) } finally { setLoading(false) }
   }
   useEffect(() => { void page() }, [songId]) // eslint-disable-line react-hooks/exhaustive-deps
+  const undo = async (e: SongEvent) => {
+    if (busy) return
+    setBusy(e.id)
+    try {
+      const r = await api.post<{ ok: boolean; error?: string }>(`${V1}/songs/${songId}/history/${e.id}/undo`)
+      if (!r.ok && r.error) setErr(r.error)
+      await onChanged()
+      await page()
+      if (r.ok) setErr('')
+    } catch (x) { setErr(errMsg(x)) } finally { setBusy(0) }
+  }
 
   const days: { day: string; items: SongEvent[] }[] = []
   for (const e of events || []) {
@@ -55,10 +68,16 @@ export function HistorySheet({ songId, title, onClose }: { songId: number; title
               <h4 className="hist-day muted small">{dayLabel(d.day)}</h4>
               <ul>
                 {d.items.map(e => (
-                  <li key={e.id} className={`hist-row k-${e.kind}`}>
+                  <li key={e.id} className={`hist-row k-${e.kind} ${e.undone_by ? 'undone' : ''}`}>
                     <span className="hist-ico"><Icon name={ICON[e.kind] || 'dot'} size={13} /></span>
-                    <span className="hist-text">{e.text}{e.via && <span className="muted"> · by {e.via}</span>}</span>
-                    <time className="muted small" dateTime={e.at} title={new Date(e.at).toLocaleString()}>{fmtISOTime(e.at)}</time>
+                    <span className="hist-text">{e.text}{e.via && <span className="muted"> · by {e.via}</span>}
+                      {e.undone_by !== 0 && <span className="hist-tag">{e.kind === 'undo' ? 'redone' : 'undone'}</span>}</span>
+                    <span className="hist-side">
+                      <time className="muted small" dateTime={e.at} title={new Date(e.at).toLocaleString()}>{fmtISOTime(e.at)}</time>
+                      {e.can_undo && <button type="button" className="btn ghost sm hist-undo" disabled={!!busy} onClick={() => undo(e)}
+                        title={e.kind === 'undo' ? 'Do it again' : 'Put this change back; you can redo it after'}>
+                        {busy === e.id ? <Spinner size={12} /> : <Icon name={e.kind === 'undo' ? 'repeat' : 'undo'} size={13} />}{e.kind === 'undo' ? 'Redo' : 'Undo'}</button>}
+                    </span>
                   </li>
                 ))}
               </ul>

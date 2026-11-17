@@ -86,6 +86,7 @@ func (s *Server) Router() http.Handler {
 				r.Post("/songs", s.handleCreateSong)
 				r.Get("/songs/{id}", s.handleGetSong)
 				r.Get("/songs/{id}/history", s.handleHistory)
+				r.Post("/songs/{id}/history/{eid}/undo", s.handleUndo)
 				r.Put("/songs/{id}", s.handleUpdateSong)
 				r.Delete("/songs/{id}", s.handleDeleteSong)
 				r.Put("/songs/{id}/order", s.handleOrder)
@@ -149,6 +150,7 @@ func (s *Server) Router() http.Handler {
 	})
 
 	r.NotFound(s.handleSPA)
+	s.router = r
 	return r
 }
 
