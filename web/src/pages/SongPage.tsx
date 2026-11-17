@@ -51,7 +51,13 @@ function moveLocally(tracks: Track[], takeId: number, to: number, offset: number
   })
 }
 
-export default function SongPage() {
+/** Each song gets its own page: switching songs stops the one playing (its player is let go) and starts the next from the top. */
+export default function SongRoute() {
+  const { id } = useParams()
+  return <SongPage key={id} />
+}
+
+function SongPage() {
   const { id } = useParams()
   const sid = Number(id)
   const navigate = useNavigate()
