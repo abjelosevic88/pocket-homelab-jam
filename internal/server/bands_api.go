@@ -243,7 +243,7 @@ func (s *Server) handleCreateMark(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "save note")
 		return
 	}
-	s.note(ctx, uid, so.ID, change{kind: "note", text: fmt.Sprintf("Added a note at %s: %s", markWhere(m), quoteText(m.Text, 80))})
+	s.note(ctx, uid, so.ID, change{kind: "note", text: fmt.Sprintf("Added a note at %s: %s", markWhere(m), quoteText(m.Text, 80))}.with(call("DELETE", "/marks/"+itoa(m.ID), nil)))
 	out, _ := s.store.GetMark(ctx, uid, m.ID)
 	writeJSON(w, http.StatusCreated, out)
 }
@@ -300,6 +300,6 @@ func (s *Server) handleDeleteMark(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "delete note")
 		return
 	}
-	s.note(ctx, uid, m.SongID, change{kind: "note", text: fmt.Sprintf("Deleted the note at %s: %s", markWhere(m), quoteText(m.Text, 80))})
+	s.note(ctx, uid, m.SongID, change{kind: "note", text: fmt.Sprintf("Deleted the note at %s: %s", markWhere(m), quoteText(m.Text, 80))}.with(undoOp{Restore: &store.Snapshot{Marks: []store.Mark{*m}}}))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

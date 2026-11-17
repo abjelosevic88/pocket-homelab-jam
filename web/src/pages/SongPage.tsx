@@ -531,6 +531,15 @@ function SongPage() {
       undos.current.push(entry)
     } catch (e) { toast(errMsg(e), 'err'); load() }
   }
+  /** An undo from the history changed the song: reload it, keep playing from where it is. */
+  const afterUndo = async () => {
+    try {
+      const fresh = await api.get<Song>(`${V1}/songs/${sid}`)
+      setSong(fresh)
+      if (playingRef.current && player.current) getPlayer().play(fresh.tracks || [], Math.max(0, player.current.position()), opts())
+      announceChange()
+    } catch (e) { toast(errMsg(e), 'err') }
+  }
   function selectItems(): MenuItem[] {
     return [
       { label: 'Select a part…', icon: 'scissors', disabled: songLen <= 0, onSelect: () => { selectAll(); setFocusSel(n => n + 1) } },
@@ -736,7 +745,7 @@ function SongPage() {
       {markEdit && <MarkEditor key={markEdit.mark?.id ?? 'new'} anchor={markEdit.anchor} mark={markEdit.mark} draft={markEdit.draft} tracks={tracks} tempo={song.tempo} beats={song.beats}
         onClose={() => setMarkEdit(null)} onSave={v => saveMark(v, markEdit.mark)} onDelete={markEdit.mark ? () => removeMark(markEdit.mark!) : undefined}
         onPlay={sec => { if (playing) seek(sec); else playFrom(sec) }} />}
-      {history && <HistorySheet songId={song.id} title={song.title} onClose={() => setHistory(false)} />}
+      {history && <HistorySheet songId={song.id} title={song.title} onClose={() => setHistory(false)} onChanged={afterUndo} />}
       {editing && <Modal title="Song details" onClose={() => setEditing(false)}><SongForm song={song} onSaved={s => { setSong(s); setEditing(false) }} /></Modal>}
       {mixing && <MixDown song={song} tracks={tracks} range={mixing.range} onClose={() => setMixing(null)} />}
       {cutAsk && <Confirm title={`Cut “${song.title}” to ${rangeLabel(cutAsk)}?`} confirmLabel="Cut" onCancel={() => setCutAsk(null)}

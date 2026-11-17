@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +46,8 @@ type Server struct {
 
 	statusMu    sync.Mutex
 	statusCache map[string]cachedState
+
+	router http.Handler // for undo: calls replayed as the person
 }
 
 type resolvedURL struct {
@@ -127,6 +130,7 @@ func (s *Server) janitor(ctx context.Context) {
 		case <-tick.C:
 			n++
 			s.resendPractice(ctx)
+			s.emptyTrash(ctx)
 			if n%24 == 0 {
 				_ = s.store.PurgeSessions(ctx)
 			}
