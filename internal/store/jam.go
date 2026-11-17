@@ -314,6 +314,50 @@ func (s *Store) UpdateTake(ctx context.Context, k *Take) error {
 	return affected(res, err)
 }
 
+// MoveTake puts a take on another track of the same song (it gets the next
+// number there and becomes the one that plays); the track it left plays its
+// newest other take, or nothing.
+func (s *Store) MoveTake(ctx context.Context, uid, id, toTrack int64) (*Take, error) {
+	k, err := s.GetTake(ctx, uid, id)
+	if err != nil {
+		return nil, err
+	}
+	if k.TrackID == toTrack {
+		return k, nil
+	}
+	var songID int64
+	if err := s.DB.QueryRowContext(ctx, `SELECT song_id FROM tracks WHERE user_id = ? AND id = ?`, uid, toTrack).Scan(&songID); err != nil {
+		return nil, notFound(err)
+	}
+	if songID != k.SongID {
+		return nil, ErrNotFound
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	from := k.TrackID
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(number), 0) + 1 FROM takes WHERE track_id = ?`, toTrack).Scan(&k.Number); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE takes SET track_id = ?, number = ? WHERE user_id = ? AND id = ?`, toTrack, k.Number, uid, id); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE tracks SET take_id = ? WHERE user_id = ? AND id = ?`, id, uid, toTrack); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE tracks SET take_id = (SELECT id FROM takes WHERE track_id = tracks.id ORDER BY number DESC LIMIT 1)
+		WHERE user_id = ? AND id = ? AND (take_id = ? OR take_id IS NULL)`, uid, from, id); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE songs SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE user_id = ? AND id = ?`, uid, k.SongID); err != nil {
+		return nil, err
+	}
+	k.TrackID = toTrack
+	return k, tx.Commit()
+}
+
 // DeleteTake removes a take; when it was the one that plays, the newest
 // other take plays instead. It returns the file to remove.
 func (s *Store) DeleteTake(ctx context.Context, uid, id int64) (string, error) {
