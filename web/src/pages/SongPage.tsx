@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { createPortal } from 'react-dom'
-import { api, V1 } from '../lib/api'
+import { api, asOneChange, V1 } from '../lib/api'
 import { useApp } from '../lib/app-context'
 import type { Idea, Instrument, Mark, Mix, Song, Take, Track } from '../lib/types'
 import {
@@ -17,6 +17,7 @@ import { Icon } from '../components/icons'
 import { Select } from '../components/Select'
 import { Waveform } from '../components/Waveform'
 import { ImportSheet } from '../components/ImportSheet'
+import { HistorySheet } from '../components/HistorySheet'
 import { SongForm } from './Songs'
 import { MarkEditor, MarkFlag, MarkList, holdToMenu, markColor } from '../components/Marks'
 import { ago, fmtBytes } from '../lib/format'
@@ -76,6 +77,7 @@ function SongPage() {
   const [partSheet, setPartSheet] = useState<{ track: number; part: number } | null>(null) // a part's takes
   const [adding, setAdding] = useState<null | { intent: 'record' | 'any' }>(null)
   const [editing, setEditing] = useState(false)
+  const [history, setHistory] = useState(false)
   const [mixing, setMixing] = useState<null | { range?: Sel }>(null)
   const [delSong, setDelSong] = useState(false)
   const player = useRef<Player | null>(null)
@@ -557,7 +559,8 @@ function SongPage() {
     })
   }
   /** Every track whose take is in the part gets a new take with just the part, picked; the notes move with it. */
-  const cutSong = async (s: Sel) => {
+  const cutSong = (s: Sel) => asOneChange(`Cut the song to ${rangeLabel(s)}`, () => cutSongNow(s))
+  const cutSongNow = async (s: Sel) => {
     if (!song || job) return
     if (playing) stop()
     const hit = tracks.filter(t => playingTakes(t).some(k => k.offset_ms / 1000 < s.b && (k.offset_ms + k.duration_ms) / 1000 > s.a))
@@ -619,6 +622,7 @@ function SongPage() {
 
   const songMenu = (): MenuItem[] => [
     { label: 'Song details', icon: 'edit', onSelect: () => setEditing(true) },
+    { label: 'History', icon: 'history', onSelect: () => setHistory(true) },
     { label: song.starred ? 'Unstar' : 'Star', icon: 'star', onSelect: () => saveSong({ starred: !song.starred }) },
     'sep',
     { label: 'Mix down to one file', icon: 'mixer', onSelect: () => setMixing({}), disabled: !song.take_count },
@@ -732,6 +736,7 @@ function SongPage() {
       {markEdit && <MarkEditor key={markEdit.mark?.id ?? 'new'} anchor={markEdit.anchor} mark={markEdit.mark} draft={markEdit.draft} tracks={tracks} tempo={song.tempo} beats={song.beats}
         onClose={() => setMarkEdit(null)} onSave={v => saveMark(v, markEdit.mark)} onDelete={markEdit.mark ? () => removeMark(markEdit.mark!) : undefined}
         onPlay={sec => { if (playing) seek(sec); else playFrom(sec) }} />}
+      {history && <HistorySheet songId={song.id} title={song.title} onClose={() => setHistory(false)} />}
       {editing && <Modal title="Song details" onClose={() => setEditing(false)}><SongForm song={song} onSaved={s => { setSong(s); setEditing(false) }} /></Modal>}
       {mixing && <MixDown song={song} tracks={tracks} range={mixing.range} onClose={() => setMixing(null)} />}
       {cutAsk && <Confirm title={`Cut “${song.title}” to ${rangeLabel(cutAsk)}?`} confirmLabel="Cut" onCancel={() => setCutAsk(null)}
