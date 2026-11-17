@@ -31,7 +31,7 @@ type linkRoute struct {
 var linkRoutes = []linkRoute{
 	{"GET", regexp.MustCompile(`^/api/v1/auth/me$`), ""},
 	{"GET", regexp.MustCompile(`^/api/v1/(home|summary|search|songs|mixes|time|day/\d{4}-\d{2}-\d{2})$`), "jam:read"},
-	{"GET", regexp.MustCompile(`^/api/v1/songs/\d+$`), "jam:read"},
+	{"GET", regexp.MustCompile(`^/api/v1/songs/\d+(/history)?$`), "jam:read"},
 	{"GET", regexp.MustCompile(`^/api/v1/(takes|mixes|ideas)/\d+/audio$`), "jam:read"},
 	{"GET", regexp.MustCompile(`^/api/v1/ideas(/\d+)?$`), "jam:read"},
 	{"POST", regexp.MustCompile(`^/api/v1/songs$`), "jam:write"},

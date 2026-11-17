@@ -28,6 +28,9 @@ func (s *Server) Router() http.Handler {
 	r.Use(s.logging)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Compress(5))
+	r.Use(func(next http.Handler) http.Handler { // X-Jam-Group: many calls, one line in a song's history
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { next.ServeHTTP(w, withGroup(r)) })
+	})
 
 	r.Get("/pocket-ask.js", s.core.AskWidget("jam"))
 	r.Get("/healthz", s.handleHealth)
@@ -82,6 +85,7 @@ func (s *Server) Router() http.Handler {
 				r.Get("/songs", s.handleSongs)
 				r.Post("/songs", s.handleCreateSong)
 				r.Get("/songs/{id}", s.handleGetSong)
+				r.Get("/songs/{id}/history", s.handleHistory)
 				r.Put("/songs/{id}", s.handleUpdateSong)
 				r.Delete("/songs/{id}", s.handleDeleteSong)
 				r.Put("/songs/{id}/order", s.handleOrder)

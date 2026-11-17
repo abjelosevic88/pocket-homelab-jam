@@ -157,6 +157,7 @@ func (s *Server) handleCreateSong(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "song")
 		return
 	}
+	s.note(ctx, uid, so.ID, change{kind: "song", text: "Made the song " + quoteText(so.Title, 80)})
 	s.publish(ctx, uid, "jam.song_added", fmt.Sprintf("song:%d", so.ID), map[string]any{"id": so.ID, "title": so.Title, "artist": so.Artist, "url": s.link(fmt.Sprintf("/songs/%d", so.ID))})
 	writeJSON(w, http.StatusCreated, out)
 }
@@ -192,6 +193,7 @@ func (s *Server) handleUpdateSong(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
+	was := *so
 	if m := in.apply(so); m != "" {
 		writeErr(w, http.StatusBadRequest, m)
 		return
@@ -206,6 +208,7 @@ func (s *Server) handleUpdateSong(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "save song")
 		return
 	}
+	s.songChanges(ctx, uid, &was, so)
 	out, err := s.store.SongWithTracks(ctx, uid, so.ID)
 	if err != nil {
 		s.fail(w, err, "song")
@@ -256,6 +259,7 @@ func (s *Server) handleOrder(w http.ResponseWriter, r *http.Request) {
 	for i, id := range in.IDs {
 		pos[id] = i
 	}
+	moved := false
 	for i := range tracks {
 		t := &tracks[i]
 		p, ok := pos[t.ID]
@@ -263,12 +267,16 @@ func (s *Server) handleOrder(w http.ResponseWriter, r *http.Request) {
 			p = len(in.IDs) + i
 		}
 		if t.Position != p {
+			moved = moved || i > 0
 			t.Position = p
 			if err := s.store.UpdateTrack(ctx, t); err != nil {
 				s.fail(w, err, "save track")
 				return
 			}
 		}
+	}
+	if moved {
+		s.note(ctx, uid, songID, change{kind: "track", key: "song:" + itoa(songID) + ":order", text: "Changed the order of the tracks"})
 	}
 	out, err := s.store.SongWithTracks(ctx, uid, songID)
 	if err != nil {
@@ -382,6 +390,7 @@ func (s *Server) handleCreateTrack(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "save track")
 		return
 	}
+	s.note(ctx, uid, so.ID, change{kind: "track", text: "Added the track " + quoteText(t.Name, 60)})
 	out, _ := s.store.GetTrack(ctx, uid, t.ID)
 	writeJSON(w, http.StatusCreated, out)
 }
@@ -399,6 +408,7 @@ func (s *Server) handleUpdateTrack(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
+	was := *t
 	if m := in.apply(t); m != "" {
 		writeErr(w, http.StatusBadRequest, m)
 		return
@@ -414,10 +424,15 @@ func (s *Server) handleUpdateTrack(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "save track")
 		return
 	}
+	s.trackChanges(ctx, uid, &was, t)
 	if in.TakeID != nil {
+		k, _ := s.store.GetTake(ctx, uid, *in.TakeID)
 		if err := s.store.PickTake(ctx, uid, *in.TakeID); err != nil {
 			s.fail(w, err, "take")
 			return
+		}
+		if k != nil && !k.Plays {
+			s.note(ctx, uid, t.SongID, change{kind: "take", text: fmt.Sprintf("%s: take %d plays now", t.Name, k.Number)})
 		}
 	}
 	out, _ := s.store.GetTrack(ctx, uid, t.ID)
@@ -426,10 +441,21 @@ func (s *Server) handleUpdateTrack(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteTrack(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	files, err := s.store.DeleteTrack(ctx, actorID(ctx), idParam(r, "id"))
+	uid := actorID(ctx)
+	t, _ := s.store.GetTrack(ctx, uid, idParam(r, "id"))
+	files, err := s.store.DeleteTrack(ctx, uid, idParam(r, "id"))
 	if err != nil {
 		s.fail(w, err, "delete track")
 		return
+	}
+	if t != nil {
+		text := "Deleted the track " + quoteText(t.Name, 60)
+		if n := len(files); n == 1 {
+			text += " (1 take)"
+		} else if n > 1 {
+			text += fmt.Sprintf(" (%d takes)", n)
+		}
+		s.note(ctx, uid, t.SongID, change{kind: "track", text: text})
 	}
 	s.dropMedia(ctx, files...)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -614,6 +640,21 @@ func (s *Server) handleCreateTake(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "save take")
 		return
 	}
+	{
+		long := clockText(k.DurationMS)
+		var text string
+		switch {
+		case meta.Source == "recorded" && k.Part != 0 && k.Part != k.ID:
+			text = fmt.Sprintf("Recorded take %d on %s: another try at the part at %s (%s long)", k.Number, t.Name, clockText(k.OffsetMS), long)
+		case meta.Source == "recorded":
+			text = fmt.Sprintf("Recorded take %d on %s at %s (%s long)", k.Number, t.Name, clockText(k.OffsetMS), long)
+		case meta.Name != "":
+			text = fmt.Sprintf("Brought in %s on %s as take %d, at %s", quoteText(meta.Name, 60), t.Name, k.Number, clockText(k.OffsetMS))
+		default:
+			text = fmt.Sprintf("Added take %d on %s at %s (%s long)", k.Number, t.Name, clockText(k.OffsetMS), long)
+		}
+		s.note(ctx, uid, t.SongID, change{kind: "take", text: text})
+	}
 	if meta.Source == "recorded" {
 		if so, err := s.store.GetSong(ctx, uid, t.SongID); err == nil {
 			s.addTime(ctx, uid, so, 0, 1)
@@ -659,6 +700,7 @@ func (s *Server) handleUpdateTake(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
+	was := *k
 	if in.TrackID != nil && *in.TrackID != k.TrackID {
 		// onto another track: the whole part goes (older clients); offset_ms then shifts the part
 		var shift int64
@@ -666,10 +708,13 @@ func (s *Server) handleUpdateTake(w http.ResponseWriter, r *http.Request) {
 			shift = *in.OffsetMS - k.OffsetMS
 			in.OffsetMS = nil
 		}
-		if _, err := s.store.MovePart(ctx, uid, k.Part, store.PartMove{TrackID: *in.TrackID, ShiftMS: shift}); err != nil {
+		before, _ := s.store.PartTakes(ctx, uid, k.Part)
+		after, err := s.store.MovePart(ctx, uid, k.Part, store.PartMove{TrackID: *in.TrackID, ShiftMS: shift})
+		if err != nil {
 			s.fail(w, err, "track")
 			return
 		}
+		s.partMoved(ctx, uid, before, after)
 		if k, err = s.store.GetTake(ctx, uid, k.ID); err != nil {
 			s.fail(w, err, "take")
 			return
@@ -699,6 +744,7 @@ func (s *Server) handleUpdateTake(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "save take")
 		return
 	}
+	s.takeChanges(ctx, uid, &was, k)
 	writeJSON(w, http.StatusOK, k)
 }
 
@@ -719,20 +765,32 @@ func (s *Server) handleMovePart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "that is too far to move it")
 		return
 	}
-	takes, err := s.store.MovePart(ctx, actorID(ctx), idParam(r, "id"), store.PartMove{TrackID: in.TrackID, ShiftMS: in.ShiftMS, Layer: in.Layer})
+	uid := actorID(ctx)
+	before, _ := s.store.PartTakes(ctx, uid, idParam(r, "id"))
+	takes, err := s.store.MovePart(ctx, uid, idParam(r, "id"), store.PartMove{TrackID: in.TrackID, ShiftMS: in.ShiftMS, Layer: in.Layer})
 	if err != nil {
 		s.fail(w, err, "part")
 		return
 	}
+	s.partMoved(ctx, uid, before, takes)
 	writeJSON(w, http.StatusOK, map[string]any{"takes": takes})
 }
 
 func (s *Server) handleDeleteTake(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	file, err := s.store.DeleteTake(ctx, actorID(ctx), idParam(r, "id"))
+	uid := actorID(ctx)
+	k, _ := s.store.GetTake(ctx, uid, idParam(r, "id"))
+	name := ""
+	if k != nil {
+		name = s.trackName(ctx, uid, k.TrackID)
+	}
+	file, err := s.store.DeleteTake(ctx, uid, idParam(r, "id"))
 	if err != nil {
 		s.fail(w, err, "delete take")
 		return
+	}
+	if k != nil {
+		s.note(ctx, uid, k.SongID, change{kind: "take", text: fmt.Sprintf("Deleted take %d from %s (it was at %s)", k.Number, name, clockText(k.OffsetMS))})
 	}
 	s.dropMedia(ctx, file)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -844,6 +902,7 @@ func (s *Server) handleCreateMix(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "save mix")
 		return
 	}
+	s.note(ctx, uid, so.ID, change{kind: "mix", text: "Mixed it down: " + quoteText(m.Name, 80)})
 	out, _ := s.store.GetMix(ctx, uid, m.ID)
 	s.publish(ctx, uid, "jam.mix_made", fmt.Sprintf("mix:%d", m.ID), map[string]any{"id": m.ID, "name": m.Name, "song_id": so.ID, "song": so.Title, "duration_ms": m.DurationMS, "url": s.link("/mixes")})
 	writeJSON(w, http.StatusCreated, out)
@@ -892,10 +951,15 @@ func (s *Server) handleUpdateMix(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteMix(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	file, err := s.store.DeleteMix(ctx, actorID(ctx), idParam(r, "id"))
+	uid := actorID(ctx)
+	m, _ := s.store.GetMix(ctx, uid, idParam(r, "id"))
+	file, err := s.store.DeleteMix(ctx, uid, idParam(r, "id"))
 	if err != nil {
 		s.fail(w, err, "delete mix")
 		return
+	}
+	if m != nil && m.SongID != nil {
+		s.note(ctx, uid, *m.SongID, change{kind: "mix", text: "Deleted the mix " + quoteText(m.Name, 80)})
 	}
 	s.dropMedia(ctx, file)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})

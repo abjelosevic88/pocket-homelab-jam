@@ -3,7 +3,7 @@
 // sample by sample (public/recorder-worklet.js) while the rest plays. A take
 // is placed where the music was heard: the device's delay (out to the
 // headphones, back in from the microphone) is taken off its start.
-import { V1 } from './api'
+import { groupHeaders, V1 } from './api'
 import type { Song, Take, Track } from './types'
 
 type AC = typeof AudioContext
@@ -556,6 +556,7 @@ export async function uploadAudio(url: string, file: Blob, name: string, meta: R
     const x = new XMLHttpRequest()
     x.open('POST', url)
     x.withCredentials = true
+    for (const [k, v] of Object.entries(groupHeaders())) x.setRequestHeader(k, v)
     x.upload.onprogress = e => { if (e.lengthComputable) onProgress?.(e.loaded / e.total) }
     x.onload = () => {
       let j: { error?: string } = {}

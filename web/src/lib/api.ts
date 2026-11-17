@@ -9,8 +9,19 @@ export class ApiError extends Error {
   }
 }
 
+/** While a job of many calls runs (cutting the song), they are one line in the song's history. */
+let group: null | { id: string; label: string } = null
+export function groupHeaders(): Record<string, string> {
+  return group ? { 'X-Jam-Group': group.id, 'X-Jam-Group-Label': encodeURIComponent(group.label) } : {}
+}
+export async function asOneChange<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  const was = group
+  group = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, label }
+  try { return await fn() } finally { group = was }
+}
+
 async function request<T>(method: string, url: string, body?: unknown, raw = false): Promise<T> {
-  const init: RequestInit = { method, headers: {}, credentials: 'same-origin' }
+  const init: RequestInit = { method, headers: { ...groupHeaders() }, credentials: 'same-origin' }
   if (body !== undefined) {
     ;(init.headers as Record<string, string>)['Content-Type'] = 'application/json'
     init.body = JSON.stringify(body)

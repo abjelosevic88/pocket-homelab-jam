@@ -254,6 +254,7 @@ func (s *Server) handleIdeaToSong(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err, "song")
 		return
 	}
+	s.note(ctx, uid, so.ID, change{kind: "song", text: "Made the song from the idea " + quoteText(x.Name, 80)})
 	s.publish(ctx, uid, "jam.song_added", fmt.Sprintf("song:%d", so.ID), map[string]any{"id": so.ID, "title": so.Title, "artist": so.Artist, "url": s.link(fmt.Sprintf("/songs/%d", so.ID))})
 	writeJSON(w, http.StatusCreated, out)
 }
