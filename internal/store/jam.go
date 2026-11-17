@@ -13,7 +13,7 @@ const songCols = `s.id, s.user_id, s.title, s.artist, s.notes, s.tempo, s.beats,
 	s.loop_start_ms, s.loop_end_ms, s.starred, s.color, s.source, s.band_id, COALESCE((SELECT b.name FROM bands b WHERE b.id = s.band_id), ''), s.opened_at, s.created_at, s.updated_at,
 	(SELECT COUNT(1) FROM tracks t WHERE t.song_id = s.id),
 	(SELECT COUNT(1) FROM takes k WHERE k.song_id = s.id),
-	COALESCE((SELECT MAX(k.offset_ms + k.duration_ms) FROM tracks t JOIN takes k ON k.id = t.take_id WHERE t.song_id = s.id), 0),
+	COALESCE((SELECT MAX(k.offset_ms + k.duration_ms) FROM takes k WHERE k.song_id = s.id AND k.plays = 1), 0),
 	COALESCE((SELECT SUM(seconds) FROM sittings x WHERE x.song_id = s.id), 0) / 60`
 
 type scanner interface{ Scan(...any) error }
@@ -246,15 +246,15 @@ func (s *Store) DeleteTrack(ctx context.Context, uid, id int64) ([]string, error
 
 // ---- takes ----
 
-const takeCols = `id, user_id, song_id, track_id, number, file, mime, size, duration_ms, offset_ms, latency_ms, sample_rate, channels, peaks, source, source_ref, device, note, liked, created_at`
+const takeCols = `id, user_id, song_id, track_id, number, file, mime, size, duration_ms, offset_ms, latency_ms, sample_rate, channels, peaks, source, source_ref, device, note, liked, created_at, part, plays, layer`
 
 func scanTake(r scanner) (*Take, error) {
 	var k Take
-	var liked int
-	if err := r.Scan(&k.ID, &k.UserID, &k.SongID, &k.TrackID, &k.Number, &k.File, &k.Mime, &k.Size, &k.DurationMS, &k.OffsetMS, &k.LatencyMS, &k.SampleRate, &k.Channels, &k.Peaks, &k.Source, &k.SourceRef, &k.Device, &k.Note, &liked, &k.CreatedAt); err != nil {
+	var liked, plays int
+	if err := r.Scan(&k.ID, &k.UserID, &k.SongID, &k.TrackID, &k.Number, &k.File, &k.Mime, &k.Size, &k.DurationMS, &k.OffsetMS, &k.LatencyMS, &k.SampleRate, &k.Channels, &k.Peaks, &k.Source, &k.SourceRef, &k.Device, &k.Note, &liked, &k.CreatedAt, &k.Part, &plays, &k.Layer); err != nil {
 		return nil, err
 	}
-	k.Liked = liked == 1
+	k.Liked, k.Plays = liked == 1, plays == 1
 	return &k, nil
 }
 
@@ -282,8 +282,58 @@ func (s *Store) GetTake(ctx context.Context, uid, id int64) (*Take, error) {
 	return k, notFound(err)
 }
 
-// CreateTake adds a take to a track and makes it the one that plays.
-func (s *Store) CreateTake(ctx context.Context, k *Take) error {
+// Where a new take goes among a track's parts.
+const (
+	PartAuto = "auto" // recorded over a part (most of either): a new attempt at it; else a part of its own
+	PartNew  = "new"  // a part of its own
+	PartOnly = "only" // a part of its own, and every other take on the track becomes an attempt at it (cut to a part)
+	PartJoin = "join" // an attempt at the part given
+)
+
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// syncTrack keeps tracks.take_id on the playing take of the top part (or NULL), for older clients.
+func syncTrack(ctx context.Context, x execer, uid, trackID int64) error {
+	_, err := x.ExecContext(ctx, `UPDATE tracks SET take_id = (SELECT id FROM takes WHERE track_id = tracks.id AND plays = 1 ORDER BY layer DESC, id DESC LIMIT 1)
+		WHERE user_id = ? AND id = ?`, uid, trackID)
+	return err
+}
+
+func topLayer(ctx context.Context, x execer, trackID int64) (int, error) {
+	var n int
+	err := x.QueryRowContext(ctx, `SELECT COALESCE(MAX(layer), 0) + 1 FROM takes WHERE track_id = ?`, trackID).Scan(&n)
+	return n, err
+}
+
+// partUnder finds the part a recording from off to off+dur is another attempt at: the playing part it
+// overlaps most, when the overlap is more than half of the shorter of the two. 0 = none.
+func partUnder(ctx context.Context, x execer, trackID, off, dur int64) (int64, error) {
+	rows, err := x.QueryContext(ctx, `SELECT part, offset_ms, duration_ms FROM takes WHERE track_id = ? AND plays = 1`, trackID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var best, bestOver int64
+	for rows.Next() {
+		var part, o, d int64
+		if err := rows.Scan(&part, &o, &d); err != nil {
+			return 0, err
+		}
+		over := min(off+dur, o+d) - max(off, o)
+		if over > bestOver && over*2 > min(dur, d) {
+			best, bestOver = part, over
+		}
+	}
+	return best, rows.Err()
+}
+
+// CreateTake adds a take to a track — as a part of its own or another attempt at
+// one (see Part*); either way it is the attempt that plays, on top.
+func (s *Store) CreateTake(ctx context.Context, k *Take, mode string, join int64) error {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -292,14 +342,42 @@ func (s *Store) CreateTake(ctx context.Context, k *Take) error {
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(number), 0) + 1 FROM takes WHERE track_id = ?`, k.TrackID).Scan(&k.Number); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO takes (user_id, song_id, track_id, number, file, mime, size, duration_ms, offset_ms, latency_ms, sample_rate, channels, peaks, source, source_ref, device, note, liked, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), strftime('%Y-%m-%dT%H:%M:%fZ','now')))`,
-		k.UserID, k.SongID, k.TrackID, k.Number, k.File, k.Mime, k.Size, k.DurationMS, k.OffsetMS, k.LatencyMS, k.SampleRate, k.Channels, k.Peaks, k.Source, k.SourceRef, k.Device, k.Note, boolInt(k.Liked), k.CreatedAt)
+	if k.Layer, err = topLayer(ctx, tx, k.TrackID); err != nil {
+		return err
+	}
+	var part int64
+	switch mode {
+	case PartJoin:
+		if err := tx.QueryRowContext(ctx, `SELECT part FROM takes WHERE user_id = ? AND track_id = ? AND part = ? LIMIT 1`, k.UserID, k.TrackID, join).Scan(&part); err != nil {
+			part = 0 // that part is not on this track (any more): a part of its own
+		}
+	case PartAuto:
+		if part, err = partUnder(ctx, tx, k.TrackID, k.OffsetMS, k.DurationMS); err != nil {
+			return err
+		}
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO takes (user_id, song_id, track_id, number, file, mime, size, duration_ms, offset_ms, latency_ms, sample_rate, channels, peaks, source, source_ref, device, note, liked, created_at, part, plays, layer)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, ''), strftime('%Y-%m-%dT%H:%M:%fZ','now')), ?, 1, ?)`,
+		k.UserID, k.SongID, k.TrackID, k.Number, k.File, k.Mime, k.Size, k.DurationMS, k.OffsetMS, k.LatencyMS, k.SampleRate, k.Channels, k.Peaks, k.Source, k.SourceRef, k.Device, k.Note, boolInt(k.Liked), k.CreatedAt, part, k.Layer)
 	if err != nil {
 		return err
 	}
 	k.ID, _ = res.LastInsertId()
-	if _, err := tx.ExecContext(ctx, `UPDATE tracks SET take_id = ? WHERE user_id = ? AND id = ?`, k.ID, k.UserID, k.TrackID); err != nil {
+	k.Plays = true
+	if part == 0 {
+		part = k.ID
+	}
+	k.Part = part
+	// the part's other attempts stop playing and come up with it
+	if _, err := tx.ExecContext(ctx, `UPDATE takes SET part = ?, plays = (id = ?), layer = ? WHERE user_id = ? AND (id = ? OR part = ?)`, part, k.ID, k.Layer, k.UserID, k.ID, part); err != nil {
+		return err
+	}
+	if mode == PartOnly {
+		if _, err := tx.ExecContext(ctx, `UPDATE takes SET part = ?, plays = 0, layer = ? WHERE user_id = ? AND track_id = ? AND id <> ?`, part, k.Layer, k.UserID, k.TrackID, k.ID); err != nil {
+			return err
+		}
+	}
+	if err := syncTrack(ctx, tx, k.UserID, k.TrackID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE songs SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE user_id = ? AND id = ?`, k.UserID, k.SongID); err != nil {
@@ -308,58 +386,133 @@ func (s *Store) CreateTake(ctx context.Context, k *Take) error {
 	return tx.Commit()
 }
 
-// UpdateTake saves where a take starts, its note and the heart.
+// SetTakePart puts a take in a part as it was elsewhere (an import): which part, whether it plays, its layer.
+func (s *Store) SetTakePart(ctx context.Context, uid, id, part int64, plays bool, layer int) error {
+	if _, err := s.DB.ExecContext(ctx, `UPDATE takes SET part = ?, plays = ?, layer = ? WHERE user_id = ? AND id = ?`, part, boolInt(plays), layer, uid, id); err != nil {
+		return err
+	}
+	var track int64
+	if err := s.DB.QueryRowContext(ctx, `SELECT track_id FROM takes WHERE id = ?`, id).Scan(&track); err != nil {
+		return err
+	}
+	return syncTrack(ctx, s.DB, uid, track)
+}
+
+// UpdateTake saves where one take starts (lining up an attempt), its note and the heart.
 func (s *Store) UpdateTake(ctx context.Context, k *Take) error {
 	res, err := s.DB.ExecContext(ctx, `UPDATE takes SET offset_ms = ?, note = ?, liked = ? WHERE user_id = ? AND id = ?`, k.OffsetMS, k.Note, boolInt(k.Liked), k.UserID, k.ID)
 	return affected(res, err)
 }
 
-// MoveTake puts a take on another track of the same song (it gets the next
-// number there and becomes the one that plays); the track it left plays its
-// newest other take, or nothing.
-func (s *Store) MoveTake(ctx context.Context, uid, id, toTrack int64) (*Take, error) {
+// PickTake makes a take the attempt that plays for its part.
+func (s *Store) PickTake(ctx context.Context, uid, id int64) error {
 	k, err := s.GetTake(ctx, uid, id)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if k.TrackID == toTrack {
-		return k, nil
+	if _, err := s.DB.ExecContext(ctx, `UPDATE takes SET plays = (id = ?) WHERE user_id = ? AND part = ?`, id, uid, k.Part); err != nil {
+		return err
 	}
-	var songID int64
-	if err := s.DB.QueryRowContext(ctx, `SELECT song_id FROM tracks WHERE user_id = ? AND id = ?`, uid, toTrack).Scan(&songID); err != nil {
+	return syncTrack(ctx, s.DB, uid, k.TrackID)
+}
+
+// PartMove says where a part goes: shift every attempt by ShiftMS, onto TrackID (same song), at Layer
+// (0 = on top of the track it lands on).
+type PartMove struct {
+	TrackID int64
+	ShiftMS int64
+	Layer   int
+}
+
+// MovePart moves a part (all its attempts together) in time and/or to another track of the same song.
+func (s *Store) MovePart(ctx context.Context, uid, part int64, m PartMove) ([]Take, error) {
+	var from, songID int64
+	if err := s.DB.QueryRowContext(ctx, `SELECT track_id, song_id FROM takes WHERE user_id = ? AND part = ? LIMIT 1`, uid, part).Scan(&from, &songID); err != nil {
 		return nil, notFound(err)
 	}
-	if songID != k.SongID {
-		return nil, ErrNotFound
+	to := from
+	if m.TrackID != 0 && m.TrackID != from {
+		var toSong int64
+		if err := s.DB.QueryRowContext(ctx, `SELECT song_id FROM tracks WHERE user_id = ? AND id = ?`, uid, m.TrackID).Scan(&toSong); err != nil {
+			return nil, notFound(err)
+		}
+		if toSong != songID {
+			return nil, ErrNotFound
+		}
+		to = m.TrackID
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	from := k.TrackID
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(number), 0) + 1 FROM takes WHERE track_id = ?`, toTrack).Scan(&k.Number); err != nil {
+	layer := m.Layer
+	if layer <= 0 {
+		var cur, top int
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(layer), 0) FROM takes WHERE part = ?`, part).Scan(&cur); err != nil {
+			return nil, err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(layer), 0) FROM takes WHERE track_id = ? AND part <> ?`, to, part).Scan(&top); err != nil {
+			return nil, err
+		}
+		layer = max(cur, top+1)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE takes SET offset_ms = offset_ms + ?, layer = ? WHERE user_id = ? AND part = ?`, m.ShiftMS, layer, uid, part); err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE takes SET track_id = ?, number = ? WHERE user_id = ? AND id = ?`, toTrack, k.Number, uid, id); err != nil {
+	if to != from {
+		// the attempts get the next numbers on the track they land on, in their order
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM takes WHERE user_id = ? AND part = ? ORDER BY number, id`, uid, part)
+		if err != nil {
+			return nil, err
+		}
+		var ids []int64
+		for rows.Next() {
+			var id int64
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		for _, id := range ids {
+			if _, err := tx.ExecContext(ctx, `UPDATE takes SET track_id = ?, number = (SELECT COALESCE(MAX(number), 0) + 1 FROM takes WHERE track_id = ?) WHERE id = ?`, to, to, id); err != nil {
+				return nil, err
+			}
+		}
+		if err := syncTrack(ctx, tx, uid, from); err != nil {
+			return nil, err
+		}
+	}
+	if err := syncTrack(ctx, tx, uid, to); err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE tracks SET take_id = ? WHERE user_id = ? AND id = ?`, id, uid, toTrack); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE songs SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE user_id = ? AND id = ?`, uid, songID); err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE tracks SET take_id = (SELECT id FROM takes WHERE track_id = tracks.id ORDER BY number DESC LIMIT 1)
-		WHERE user_id = ? AND id = ? AND (take_id = ? OR take_id IS NULL)`, uid, from, id); err != nil {
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE songs SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE user_id = ? AND id = ?`, uid, k.SongID); err != nil {
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+takeCols+` FROM takes WHERE user_id = ? AND part = ? ORDER BY number`, uid, part)
+	if err != nil {
 		return nil, err
 	}
-	k.TrackID = toTrack
-	return k, tx.Commit()
+	defer rows.Close()
+	out := []Take{}
+	for rows.Next() {
+		k, err := scanTake(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *k)
+	}
+	return out, rows.Err()
 }
 
-// DeleteTake removes a take; when it was the one that plays, the newest
-// other take plays instead. It returns the file to remove.
+// DeleteTake removes a take; when it was the attempt that played, the newest
+// other attempt at its part plays instead (no other: the part is gone). It
+// returns the file to remove.
 func (s *Store) DeleteTake(ctx context.Context, uid, id int64) (string, error) {
 	k, err := s.GetTake(ctx, uid, id)
 	if err != nil {
@@ -373,8 +526,12 @@ func (s *Store) DeleteTake(ctx context.Context, uid, id int64) (string, error) {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM takes WHERE user_id = ? AND id = ?`, uid, id); err != nil {
 		return "", err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE tracks SET take_id = (SELECT id FROM takes WHERE track_id = tracks.id ORDER BY number DESC LIMIT 1)
-		WHERE user_id = ? AND id = ? AND (take_id = ? OR take_id IS NULL)`, uid, k.TrackID, id); err != nil {
+	if k.Plays {
+		if _, err := tx.ExecContext(ctx, `UPDATE takes SET plays = 1 WHERE id = (SELECT id FROM takes WHERE user_id = ? AND part = ? ORDER BY number DESC LIMIT 1)`, uid, k.Part); err != nil {
+			return "", err
+		}
+	}
+	if err := syncTrack(ctx, tx, uid, k.TrackID); err != nil {
 		return "", err
 	}
 	return k.File, tx.Commit()

@@ -409,11 +409,16 @@ func (s *Server) handleUpdateTrack(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "that take is not on this track")
 			return
 		}
-		t.TakeID = &k.ID
 	}
 	if err := s.store.UpdateTrack(ctx, t); err != nil {
 		s.fail(w, err, "save track")
 		return
+	}
+	if in.TakeID != nil {
+		if err := s.store.PickTake(ctx, uid, *in.TakeID); err != nil {
+			s.fail(w, err, "take")
+			return
+		}
 	}
 	out, _ := s.store.GetTrack(ctx, uid, t.ID)
 	writeJSON(w, http.StatusOK, out)
@@ -449,6 +454,8 @@ type audioMeta struct {
 	ClientID   string `json:"client_id"`  // ideas: the device's own id
 	CreatedAt  string `json:"created_at"` // ideas: when it was recorded
 	BandID     *int64 `json:"band_id"`    // ideas: the band it is in (0 or null = none)
+	Part       string `json:"part"`       // takes: auto (default for recordings) | new (default for files) | only | join
+	PartID     int64  `json:"part_id"`    // takes: the part to join
 }
 
 func (m *audioMeta) check() string {
@@ -593,7 +600,16 @@ func (s *Server) handleCreateTake(w http.ResponseWriter, r *http.Request) {
 	}
 	k := &store.Take{UserID: uid, SongID: t.SongID, TrackID: t.ID, File: rel, Mime: mime, Size: size, DurationMS: meta.DurationMS, OffsetMS: meta.OffsetMS,
 		LatencyMS: meta.LatencyMS, SampleRate: meta.SampleRate, Channels: meta.Channels, Peaks: meta.Peaks, Source: meta.Source, SourceRef: meta.SourceRef, Device: meta.Device, Note: meta.Note}
-	if err := s.store.CreateTake(ctx, k); err != nil {
+	mode := meta.Part
+	switch mode {
+	case store.PartNew, store.PartOnly, store.PartJoin, store.PartAuto:
+	default:
+		mode = store.PartNew // a file brought in is a part of its own
+		if meta.Source == "recorded" {
+			mode = store.PartAuto // recorded over a part: another attempt at it
+		}
+	}
+	if err := s.store.CreateTake(ctx, k, mode, meta.PartID); err != nil {
 		_ = os.Remove(s.mediaPath(rel))
 		s.fail(w, err, "save take")
 		return
@@ -637,18 +653,34 @@ func (s *Server) handleUpdateTake(w http.ResponseWriter, r *http.Request) {
 		Note     *string `json:"note"`
 		Liked    *bool   `json:"liked"`
 		TrackID  *int64  `json:"track_id"`
+		Plays    *bool   `json:"plays"`
 	}
 	if err := decode(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 	if in.TrackID != nil && *in.TrackID != k.TrackID {
-		moved, err := s.store.MoveTake(ctx, uid, k.ID, *in.TrackID)
-		if err != nil {
+		// onto another track: the whole part goes (older clients); offset_ms then shifts the part
+		var shift int64
+		if in.OffsetMS != nil {
+			shift = *in.OffsetMS - k.OffsetMS
+			in.OffsetMS = nil
+		}
+		if _, err := s.store.MovePart(ctx, uid, k.Part, store.PartMove{TrackID: *in.TrackID, ShiftMS: shift}); err != nil {
 			s.fail(w, err, "track")
 			return
 		}
-		k = moved
+		if k, err = s.store.GetTake(ctx, uid, k.ID); err != nil {
+			s.fail(w, err, "take")
+			return
+		}
+	}
+	if in.Plays != nil && *in.Plays {
+		if err := s.store.PickTake(ctx, uid, k.ID); err != nil {
+			s.fail(w, err, "take")
+			return
+		}
+		k.Plays = true
 	}
 	if in.OffsetMS != nil {
 		if *in.OffsetMS < -maxLengthMS || *in.OffsetMS > maxLengthMS {
@@ -668,6 +700,31 @@ func (s *Server) handleUpdateTake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, k)
+}
+
+// handleMovePart moves a part — every attempt at it together — later or earlier
+// (shift_ms) and/or onto another track of the song; it lands on top (or at layer).
+func (s *Server) handleMovePart(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var in struct {
+		TrackID int64 `json:"track_id"`
+		ShiftMS int64 `json:"shift_ms"`
+		Layer   int   `json:"layer"`
+	}
+	if err := decode(r, &in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if in.ShiftMS < -maxLengthMS || in.ShiftMS > maxLengthMS {
+		writeErr(w, http.StatusBadRequest, "that is too far to move it")
+		return
+	}
+	takes, err := s.store.MovePart(ctx, actorID(ctx), idParam(r, "id"), store.PartMove{TrackID: in.TrackID, ShiftMS: in.ShiftMS, Layer: in.Layer})
+	if err != nil {
+		s.fail(w, err, "part")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"takes": takes})
 }
 
 func (s *Server) handleDeleteTake(w http.ResponseWriter, r *http.Request) {
@@ -700,20 +757,28 @@ func (s *Server) handleStems(w http.ResponseWriter, r *http.Request) {
 		Volume     int    `json:"volume"`
 		Pan        int    `json:"pan"`
 		Muted      bool   `json:"muted"`
+		Layer      int    `json:"layer"`
 	}
 	stems := []stem{}
 	type fileOut struct{ name, path string }
 	files := []fileOut{}
 	for i, t := range so.Tracks {
-		if t.TakeID == nil {
-			continue
+		n, parts := 0, 0
+		for _, k := range t.Takes {
+			if k.Plays {
+				parts++
+			}
 		}
 		for _, k := range t.Takes {
-			if k.ID != *t.TakeID {
+			if !k.Plays {
 				continue
 			}
+			n++
 			name := fmt.Sprintf("%02d %s%s", i+1, fileSafe(t.Name), filepath.Ext(k.File))
-			stems = append(stems, stem{File: name, Track: t.Name, Instrument: t.Instrument, OffsetMS: k.OffsetMS, DurationMS: k.DurationMS, Volume: t.Volume, Pan: t.Pan, Muted: t.Muted})
+			if parts > 1 {
+				name = fmt.Sprintf("%02d %s - part %d%s", i+1, fileSafe(t.Name), n, filepath.Ext(k.File))
+			}
+			stems = append(stems, stem{File: name, Track: t.Name, Instrument: t.Instrument, OffsetMS: k.OffsetMS, DurationMS: k.DurationMS, Volume: t.Volume, Pan: t.Pan, Muted: t.Muted, Layer: k.Layer})
 			files = append(files, fileOut{name, s.mediaPath(k.File)})
 		}
 	}
@@ -728,7 +793,7 @@ func (s *Server) handleStems(w http.ResponseWriter, r *http.Request) {
 		enc := json.NewEncoder(f)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(map[string]any{"app": "Pocket Jam", "title": so.Title, "artist": so.Artist, "tempo": so.Tempo, "beats": so.Beats, "beat_unit": so.BeatUnit, "key": so.KeyName,
-			"note": "Each file starts at offset_ms from the start of the song (a negative offset: cut that much from the file's start).", "stems": stems})
+			"note": "Each file starts at offset_ms from the start of the song (a negative offset: cut that much from the file's start). A track can have several parts; where two overlap, the one with the higher layer is heard.", "stems": stems})
 	}
 	for _, f := range files {
 		in, err := os.Open(f.path)

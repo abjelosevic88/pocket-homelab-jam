@@ -8,8 +8,8 @@ import { api, V1 } from '../lib/api'
 import { useApp } from '../lib/app-context'
 import type { Idea, Instrument, Mark, Mix, Song, Take, Track } from '../lib/types'
 import {
-  Mic, Player, activeTake, audible, audioContext, audioSession, barBeat, cachedTake, clock, encodeWav, latencyMs, levelTake, loadTake, mixDown,
-  peaksOf, placeTake, rememberTake, uploadAudio,
+  Mic, Player, attemptsOf, audible, audioContext, audioSession, barBeat, cachedTake, clock, encodeWav, latencyMs, levelTake, loadTake, mixDown,
+  peaksOf, placeTake, playingTakes, rememberTake, renderTrack, uploadAudio,
 } from '../lib/engine'
 import { useCrumb, announceChange } from '../components/Layout'
 import { Confirm, Empty, Field, Loading, Modal, Segmented, Spinner, Switch, useIsMobile, useToast, errMsg, MenuButton, ContextMenu, rectOf, type Anchor, type MenuItem } from '../components/ui'
@@ -20,7 +20,7 @@ import { ImportSheet } from '../components/ImportSheet'
 import { SongForm } from './Songs'
 import { MarkEditor, MarkFlag, MarkList, holdToMenu, markColor } from '../components/Marks'
 import { ago, fmtBytes } from '../lib/format'
-import { clientId, partFile, rangeLabel, saveBlob, sliceAudio, type Sel } from '../lib/part'
+import { clientId, partFile, rangeLabel, saveBlob, type Sel } from '../lib/part'
 import { SelBand, SelBar, useRangeSelect } from '../components/Selection'
 
 export const INSTRUMENTS: { value: Instrument; label: string; icon: string; color: string }[] = [
@@ -39,15 +39,15 @@ const colorOf = (t: Track) => t.color || instrumentOf(t.instrument).color
 
 type RecState = 'off' | 'opening' | 'rolling' | 'saving'
 
-/** The tracks with a take moved to another start and/or track: it plays there; the track it left plays its newest other take. */
-function moveLocally(tracks: Track[], takeId: number, to: number, offset: number): Track[] {
-  const k = tracks.flatMap(t => t.takes).find(x => x.id === takeId)
-  if (!k) return tracks
+/** The tracks with a part (all its attempts) moved by shift ms and/or onto another track, where it lands on top. */
+function movePartLocally(tracks: Track[], part: number, to: number, shift: number): Track[] {
+  const moving = tracks.flatMap(t => t.takes.filter(k => k.part === part))
+  if (!moving.length) return tracks
+  const top = Math.max(0, ...(tracks.find(t => t.id === to)?.takes.filter(k => k.part !== part).map(k => k.layer) || [])) + 1
   return tracks.map(t => {
-    let takes = t.takes.filter(x => x.id !== takeId)
-    if (t.id === to) takes = [...takes, { ...k, track_id: to, offset_ms: offset }]
-    const take_id = t.id === to ? takeId : t.take_id === takeId ? (takes.length ? takes[takes.length - 1].id : null) : t.take_id
-    return { ...t, takes, take_id }
+    const takes = t.takes.filter(k => k.part !== part)
+    if (t.id === to) takes.push(...moving.map(k => ({ ...k, track_id: to, offset_ms: k.offset_ms + shift, layer: Math.max(k.layer, top) })))
+    return { ...t, takes }
   })
 }
 
@@ -73,6 +73,7 @@ function SongPage() {
   const [pos, setPos] = useState(0) // where the playhead rests
   const [pxPerSec, setPx] = useState(0)
   const [sheet, setSheet] = useState<number | null>(null) // a track's own sheet
+  const [partSheet, setPartSheet] = useState<{ track: number; part: number } | null>(null) // a part's takes
   const [adding, setAdding] = useState<null | { intent: 'record' | 'any' }>(null)
   const [editing, setEditing] = useState(false)
   const [mixing, setMixing] = useState<null | { range?: Sel }>(null)
@@ -107,9 +108,8 @@ function SongPage() {
 
   // decode every playing take (once per page)
   useEffect(() => {
-    for (const t of tracks) {
-      const k = activeTake(t)
-      if (!k || ready[k.id]) continue
+    for (const t of tracks) for (const k of playingTakes(t)) {
+      if (ready[k.id]) continue
       if (cachedTake(k.id)) { setReady(r => ({ ...r, [k.id]: true })); continue }
       loadTake(k.id).then(() => setReady(r => ({ ...r, [k.id]: true }))).catch(e => toast(errMsg(e), 'err'))
     }
@@ -127,7 +127,7 @@ function SongPage() {
   useEffect(() => { player.current?.mixer(tracks) }, [tracks])
 
   const opts = () => ({ click: !!song?.click, tempo: song!.tempo, beats: song!.beats, clickSound: settings?.click_sound || 'click', clickVolume: settings?.click_volume ?? 70 })
-  const allReady = tracks.every(t => { const k = activeTake(t); return !k || ready[k.id] })
+  const allReady = tracks.every(t => playingTakes(t).every(k => ready[k.id]))
 
   const play = () => {
     if (!song) return
@@ -206,8 +206,10 @@ function SongPage() {
     // no count-in: it records from where the song is, at once; with one, from the start of that bar after the clicks
     const from = song.count_in > 0 ? Math.max(0, Math.floor(here / bar + 1e-6) * bar) : here
     recFrom.current = from
-    if (song.count_in > 0) p.play(tracks.filter(t => t.id !== target.id), from - song.count_in * bar, { ...opts(), countInFrom: from })
-    else p.play(tracks.filter(t => t.id !== target.id), from, opts())
+    // you hear everything, but not the part on this track you start recording over (you're playing it again)
+    const heard = tracks.map(t => t.id !== target.id ? t : { ...t, takes: t.takes.filter(k => !(k.plays && k.offset_ms / 1000 <= from + 0.05 && (k.offset_ms + k.duration_ms) / 1000 > from)) })
+    if (song.count_in > 0) p.play(heard, from - song.count_in * bar, { ...opts(), countInFrom: from })
+    else p.play(heard, from, opts())
     mic.current.start()
     setPlaying(true)
     setRec('rolling')
@@ -241,7 +243,8 @@ function SongPage() {
       rememberTake(take.id, buf)
       setReady(r => ({ ...r, [take.id]: true }))
       await load()
-      toast(`Take ${take.number} kept on ${target.name}${raised ? ` (made ${raised} dB louder)` : ''}`, 'ok', { label: 'Undo', run: async () => { await api.del(`${V1}/takes/${take.id}`).catch(() => {}); load() } })
+      const again = take.part !== take.id
+      toast(`${again ? `Another try at that part of ${target.name} (take ${take.number}) — click the part to pick between them` : `Take ${take.number} kept on ${target.name}`}${raised ? ` (made ${raised} dB louder)` : ''}`, 'ok', { label: 'Undo', run: async () => { await api.del(`${V1}/takes/${take.id}`).catch(() => {}); load() } })
       announceChange()
     } catch (e) {
       toast(errMsg(e), 'err')
@@ -427,8 +430,6 @@ function SongPage() {
 
   // ---- moving a part: drag a take left/right (whole beats; Alt for free) and up/down to another track (or the empty row for a new one) ----
   const [clip, setClip] = useState<null | { take: Take; from: number; dx: number; dy: number; to: number | 'new' }>(null)
-  // dropped on a track that already plays a part: ask (a track plays one part; the other would only stay in its takes)
-  const [dropAsk, setDropAsk] = useState<null | { x: number; y: number; take: Take; from: Track; offset: number; to: Track }>(null)
   // what Ctrl/⌘+Z takes back: the moves made on this page, newest last
   const undos = useRef<{ run: () => Promise<void>; done: boolean }[]>([])
   const undoLast = () => {
@@ -479,7 +480,7 @@ function SongPage() {
       window.removeEventListener('keydown', key)
       window.removeEventListener('keyup', key)
     }
-    const up = (ev: PointerEvent) => {
+    const up = () => {
       done()
       setClip(null)
       if (!moved || !last) return
@@ -488,8 +489,6 @@ function SongPage() {
       window.addEventListener('click', eat, { capture: true, once: true })
       window.setTimeout(() => window.removeEventListener('click', eat, { capture: true }), 300)
       const offset = Math.round(k.offset_ms + last.dx * 1000)
-      const dest = typeof last.to === 'number' && last.to !== t.id ? tracksRef.current.find(x => x.id === last!.to) : undefined
-      if (dest && activeTake(dest)) { setDropAsk({ x: ev.clientX, y: ev.clientY, take: k, from: t, offset, to: dest }); return }
       if (last.dx !== 0 || last.to !== t.id) void moveTake(k, t, offset, last.to)
     }
     const cancel = () => { done(); setClip(null) }
@@ -499,15 +498,16 @@ function SongPage() {
     window.addEventListener('keydown', key)
     window.addEventListener('keyup', key)
   }
-  /** Put a take at a new start and/or on another track ('new' makes a track for it), with Undo. */
+  /** Move a part (all its attempts) to a new start and/or onto another track ('new' makes a track for it); it lands on top. With Undo. */
   const moveTake = async (k: Take, from: Track, offset: number, to: number | 'new') => {
     const restart = (ts: Track[]) => { if (playingRef.current && player.current) getPlayer().play(ts, Math.max(0, player.current.position()), opts()) }
-    if (to !== 'new') setSong(s => s && { ...s, tracks: moveLocally(s.tracks || [], k.id, to, offset) })
+    const shift = offset - k.offset_ms
+    const layer = Math.max(...from.takes.filter(x => x.part === k.part).map(x => x.layer))
+    if (to !== 'new') setSong(s => s && { ...s, tracks: movePartLocally(s.tracks || [], k.part, to, shift) })
     try {
       let target = to === 'new' ? null : tracks.find(x => x.id === to) || null
-      const wasPlaying = target && target.id !== from.id ? target.take_id : null
       if (to === 'new') target = await api.post<Track>(`${V1}/songs/${sid}/tracks`, { instrument: from.instrument })
-      await api.put(`${V1}/takes/${k.id}`, { offset_ms: offset, ...(target && target.id !== from.id ? { track_id: target.id } : {}) })
+      await api.put(`${V1}/parts/${k.part}`, { shift_ms: shift, ...(target && target.id !== from.id ? { track_id: target.id } : {}) })
       const fresh = await api.get<Song>(`${V1}/songs/${sid}`)
       setSong(fresh)
       restart(fresh.tracks || [])
@@ -519,10 +519,8 @@ function SongPage() {
         entry.done = true
         undos.current = undos.current.filter(x => x !== entry)
         try {
-          await api.put(`${V1}/takes/${k.id}`, { offset_ms: k.offset_ms, track_id: from.id })
-          if (from.take_id && from.take_id !== k.id) await api.put(`${V1}/tracks/${from.id}`, { take_id: from.take_id })
+          await api.put(`${V1}/parts/${k.part}`, { shift_ms: -shift, track_id: from.id, layer })
           if (made) await api.del(`${V1}/tracks/${made.id}`)
-          else if (target && wasPlaying && target.id !== from.id) await api.put(`${V1}/tracks/${target.id}`, { take_id: wasPlaying })
           const back = await api.get<Song>(`${V1}/songs/${sid}`)
           setSong(back)
           restart(back.tracks || [])
@@ -565,27 +563,24 @@ function SongPage() {
   const cutSong = async (s: Sel) => {
     if (!song || job) return
     if (playing) stop()
-    const hit = tracks.filter(t => { const k = activeTake(t); return !!k && k.offset_ms / 1000 < s.b && (k.offset_ms + k.duration_ms) / 1000 > s.a })
-    const untouched = tracks.filter(t => activeTake(t) && !hit.includes(t)).length
+    const hit = tracks.filter(t => playingTakes(t).some(k => k.offset_ms / 1000 < s.b && (k.offset_ms + k.duration_ms) / 1000 > s.a))
+    const untouched = tracks.filter(t => playingTakes(t).length && !hit.includes(t)).length
     let done = 0
     for (const t of hit) {
       setJob({ what: 'cut', text: `Cutting ${done + 1} of ${hit.length} ${hit.length === 1 ? 'track' : 'tracks'}…` })
-      const k = activeTake(t)!
       try {
-        const buf = await loadTake(k.id)
-        const off = k.offset_ms / 1000
-        const channels = sliceAudio(buf, { a: Math.max(0, s.a - off), b: Math.min(buf.duration, s.b - off) })
-        const len = channels[0]?.length || 0
-        if (!len) { done++; continue }
-        const take = await uploadAudio(`${V1}/tracks/${t.id}/takes`, encodeWav(channels, buf.sampleRate), 'take.wav', {
-          duration_ms: Math.round(len / buf.sampleRate * 1000), offset_ms: Math.round(Math.max(0, off - s.a) * 1000), latency_ms: 0, sample_rate: buf.sampleRate,
-          channels: channels.length, peaks: peaksOf(channels, buf.sampleRate), source: 'upload', device: k.device,
+        // the track as heard in the part (all its parts, the top one where they overlap) becomes its one part; the rest stay as older takes of it
+        const r = await renderTrack(t, s)
+        const len = r?.channels[0]?.length || 0
+        if (!r || !len) { done++; continue }
+        const take = await uploadAudio(`${V1}/tracks/${t.id}/takes`, encodeWav(r.channels, r.rate), 'take.wav', {
+          duration_ms: Math.round(len / r.rate * 1000), offset_ms: Math.round((r.at - s.a) * 1000), latency_ms: 0, sample_rate: r.rate,
+          channels: r.channels.length, peaks: peaksOf(r.channels, r.rate), source: 'upload', device: playingTakes(t).at(-1)?.device || '', part: 'only',
         }) as Take
-        const nb = audioContext().createBuffer(channels.length, len, buf.sampleRate)
-        channels.forEach((c, i) => nb.copyToChannel(c as Float32Array<ArrayBuffer>, i))
+        const nb = audioContext().createBuffer(r.channels.length, len, r.rate)
+        r.channels.forEach((c, i) => nb.copyToChannel(c as Float32Array<ArrayBuffer>, i))
         rememberTake(take.id, nb)
-        setReady(r => ({ ...r, [take.id]: true }))
-        await api.put(`${V1}/tracks/${t.id}`, { take_id: take.id })
+        setReady(x => ({ ...x, [take.id]: true }))
         done++
       } catch (e) {
         setJob(null)
@@ -621,6 +616,7 @@ function SongPage() {
   if (missing) return <Empty title="This song is not here" icon="music"><button type="button" className="btn" onClick={() => navigate('/songs')}>All songs</button></Empty>
   if (!song) return <Loading />
   const sheetTrack = tracks.find(t => t.id === sheet)
+  const partTrack = partSheet ? tracks.find(t => t.id === partSheet.track && t.takes.some(k => k.part === partSheet.part)) : undefined
   const busy = rec !== 'off'
   const bar = song.beats * 60 / song.tempo
 
@@ -677,9 +673,9 @@ function SongPage() {
             </div>
             {tracks.map(t => (
               <TrackRow key={t.id} t={t} tracks={tracks} headW={headW} laneW={laneW} px={px} armed={armed === t.id} recording={rec === 'rolling' && armed === t.id}
-                drag={clip && clip.from === t.id ? clip : null} drop={!!clip && clip.to === t.id && clip.from !== t.id} onTakeDown={startClip}
-                dragTip={clip && clip.from === t.id ? `${clock(Math.max(0, clip.take.offset_ms / 1000 + clip.dx))} · bar ${barBeat(Math.max(0, clip.take.offset_ms / 1000 + clip.dx), song.tempo, song.beats)}${clip.to !== t.id ? ` → ${clip.to === 'new' ? 'new track' : (() => { const d = tracks.find(x => x.id === clip.to); return d ? `${d.name}${activeTake(d) ? ' (has a part)' : ''}` : '' })()}` : ''}` : ''}
-                loading={!!activeTake(t) && !ready[activeTake(t)!.id]} onArm={() => !busy && setArmed(armed === t.id ? null : t.id)} onOpen={() => setSheet(t.id)}
+                drag={clip && clip.from === t.id ? { part: clip.take.part, dx: clip.dx, dy: clip.dy } : null} drop={!!clip && clip.to === t.id && clip.from !== t.id} onTakeDown={startClip}
+                dragTip={clip && clip.from === t.id ? `${clock(Math.max(0, clip.take.offset_ms / 1000 + clip.dx))} · bar ${barBeat(Math.max(0, clip.take.offset_ms / 1000 + clip.dx), song.tempo, song.beats)}${clip.to !== t.id ? ` → ${clip.to === 'new' ? 'new track' : tracks.find(x => x.id === clip.to)?.name || ''}` : ''}` : ''}
+                ready={ready} onOpenPart={k => setPartSheet({ track: t.id, part: k.part })} onArm={() => !busy && setArmed(armed === t.id ? null : t.id)} onOpen={() => setSheet(t.id)}
                 onMute={() => saveTrack(t, { muted: !t.muted })} onSolo={() => saveTrack(t, { solo: !t.solo })} onSeek={seek} {...laneEvents(t)}>
                 {marks.filter(m => m.track_id === t.id).map(m => <MarkFlag key={m.id} m={m} px={px} color={colorOfMark(m)} onOpen={openMark} onChange={changeMark} onDelete={removeMark} />)}
               </TrackRow>
@@ -730,17 +726,12 @@ function SongPage() {
         <NotesBox key={song.id} value={song.notes} onSave={v => saveSong({ notes: v })} />
       </section>
 
-      {sheetTrack && <TrackSheet t={sheetTrack} song={song} onMove={(take, to) => { setSheet(null); void moveTake(take, sheetTrack, take.offset_ms, to) }} onClose={() => setSheet(null)} onSave={p => saveTrack(sheetTrack, p)} onReload={load}
-        onDeleted={() => { setSheet(null); load() }} ready={ready} onReady={kid => setReady(r => ({ ...r, [kid]: true }))} />}
+      {partTrack && partSheet && <PartSheet t={partTrack} part={partSheet.part} tracks={tracks} onClose={() => setPartSheet(null)} onReload={load} ready={ready} onReady={id => setReady(r => ({ ...r, [id]: true }))}
+        onMove={(take, to) => { setPartSheet(null); void moveTake(take, partTrack, take.offset_ms, to) }} />}
+      {sheetTrack && <TrackSheet t={sheetTrack} onOpenPart={k => { setSheet(null); setPartSheet({ track: sheetTrack.id, part: k.part }) }} onClose={() => setSheet(null)} onSave={p => saveTrack(sheetTrack, p)}
+        onDeleted={() => { setSheet(null); load() }} />}
       {adding && <AddTrack intent={adding.intent} onClose={() => setAdding(null)} onAdd={addTrack} songId={sid} onImported={async kid => { setReady(r => ({ ...r, [kid]: true })); await load(); announceChange() }} onRecord={() => { setAdding(null); setTimeout(() => void record(), 50) }} />}
       {ctxMenu && <ContextMenu at={ctxMenu} items={ctxItems(ctxMenu)} onClose={() => setCtxMenu(null)} width={250} />}
-      {dropAsk && <ContextMenu at={dropAsk} onClose={() => setDropAsk(null)} width={290} items={[
-        { heading: `${dropAsk.to.name} already plays a part` },
-        { label: 'Put it on a new track', icon: 'plus', hint: 'both play', onSelect: () => { const d = dropAsk; setDropAsk(null); void moveTake(d.take, d.from, d.offset, 'new') } },
-        { label: `Play it instead on ${dropAsk.to.name}`, icon: 'repeat', hint: 'old one kept in takes', onSelect: () => { const d = dropAsk; setDropAsk(null); void moveTake(d.take, d.from, d.offset, d.to.id) } },
-        'sep',
-        { label: 'Cancel', icon: 'x', onSelect: () => setDropAsk(null) },
-      ]} />}
       {markEdit && <MarkEditor key={markEdit.mark?.id ?? 'new'} anchor={markEdit.anchor} mark={markEdit.mark} draft={markEdit.draft} tracks={tracks} tempo={song.tempo} beats={song.beats}
         onClose={() => setMarkEdit(null)} onSave={v => saveMark(v, markEdit.mark)} onDelete={markEdit.mark ? () => removeMark(markEdit.mark!) : undefined}
         onPlay={sec => { if (playing) seek(sec); else playFrom(sec) }} />}
@@ -783,19 +774,19 @@ function Ruler({ width, px, bar, beats, rulerRef, onStrip, onContextMenu, onHold
     onPointerDown={e => { if (e.button !== 0) return; onHold(e); onStrip(e) }}>{marks}{children}</div>
 }
 
-function TrackRow({ t, tracks, headW, laneW, px, armed, recording, loading, drag, drop, dragTip, onTakeDown, onArm, onOpen, onMute, onSolo, onSeek, onContextMenu, onHold, children }: {
-  t: Track; tracks: Track[]; headW: number; laneW: number; px: number; armed: boolean; recording: boolean; loading: boolean
-  drag: { dx: number; dy: number } | null; drop: boolean; dragTip: string; onTakeDown: (e: React.PointerEvent<HTMLElement>, t: Track, k: Take) => void
-  onArm: () => void; onOpen: () => void; onMute: () => void; onSolo: () => void; onSeek: (s: number) => void
+function TrackRow({ t, tracks, headW, laneW, px, armed, recording, ready, drag, drop, dragTip, onTakeDown, onOpenPart, onArm, onOpen, onMute, onSolo, onSeek, onContextMenu, onHold, children }: {
+  t: Track; tracks: Track[]; headW: number; laneW: number; px: number; armed: boolean; recording: boolean; ready: Record<number, boolean>
+  drag: { part: number; dx: number; dy: number } | null; drop: boolean; dragTip: string; onTakeDown: (e: React.PointerEvent<HTMLElement>, t: Track, k: Take) => void
+  onOpenPart: (k: Take) => void; onArm: () => void; onOpen: () => void; onMute: () => void; onSolo: () => void; onSeek: (s: number) => void
   onContextMenu: (e: React.MouseEvent<HTMLElement>) => void; onHold: (e: React.PointerEvent<HTMLElement>) => void; children?: React.ReactNode
 }) {
-  const k = activeTake(t)
+  const parts = playingTakes(t)
   const heard = audible(t, tracks)
   const color = colorOf(t)
   return (
     <div className={`tl-row ${heard ? '' : 'quiet'} ${drop ? 'drop-to' : ''} ${drag ? 'dragging-from' : ''}`} data-drop={t.id}>
       <div className="tl-head trk-head" style={{ width: headW, ['--trk' as string]: color }}>
-        <button type="button" className="trk-name" onClick={onOpen} title={`${t.name}: volume, balance, takes`}>
+        <button type="button" className="trk-name" onClick={onOpen} title={`${t.name}: name, volume, balance, its parts`}>
           <span className="trk-ico"><Icon name={instrumentOf(t.instrument).icon} size={14} /></span>
           <span className="ellipsis">{t.name}</span>
         </button>
@@ -807,12 +798,18 @@ function TrackRow({ t, tracks, headW, laneW, px, armed, recording, loading, drag
       </div>
       <div className={`lane ${armed ? 'armed' : ''} ${recording ? 'recording' : ''}`} style={{ width: laneW }} onContextMenu={onContextMenu}
         onPointerDown={e => { if (e.button !== 0) return; onHold(e); if ((e.target as HTMLElement).closest('.take')) return; const r = e.currentTarget.getBoundingClientRect(); onSeek((e.clientX - r.left) / px) }}>
-        {k && <div className={`take ${drag ? 'dragging' : ''}`} style={{ left: k.offset_ms / 1000 * px, width: Math.max(4, k.duration_ms / 1000 * px), ['--trk' as string]: color, transform: drag ? `translate(${drag.dx * px}px, ${drag.dy}px)` : undefined }}
-          onClick={onOpen} onPointerDown={e => onTakeDown(e, t, k)} title={`Take ${k.number} — click for its takes, drag to move it (Alt: off the beat)`}>
-          <Waveform peaks={k.peaks} pxPerSec={px} width={Math.min(Math.max(4, Math.round(k.duration_ms / 1000 * px)), 16000)} height={46} color={color} />
-          <span className="take-tag">{drag ? dragTip : t.takes.length > 1 ? `take ${k.number}` : ''}{loading && <Spinner size={10} />}</span>
-        </div>}
-        {!k && !recording && <span className="lane-hint">{armed ? 'Press record' : 'Empty'}</span>}
+        {parts.map((k, i) => {
+          const d = drag && drag.part === k.part ? drag : null
+          const tries = t.takes.filter(x => x.part === k.part).length
+          return (
+            <div key={k.part} className={`take ${d ? 'dragging' : ''}`} style={{ left: k.offset_ms / 1000 * px, width: Math.max(4, k.duration_ms / 1000 * px), ['--trk' as string]: color, zIndex: d ? 50 : i + 1, transform: d ? `translate(${d.dx * px}px, ${d.dy}px)` : undefined }}
+              onClick={() => onOpenPart(k)} onPointerDown={e => onTakeDown(e, t, k)} title={`${tries > 1 ? `${tries} takes of this part — take ${k.number} plays` : `Take ${k.number}`}. Click for its takes, drag to move it (Alt: off the beat)`}>
+              <Waveform peaks={k.peaks} pxPerSec={px} width={Math.min(Math.max(4, Math.round(k.duration_ms / 1000 * px)), 16000)} height={46} color={color} />
+              <span className="take-tag">{d ? dragTip : tries > 1 ? `${tries} takes` : ''}{!ready[k.id] && <Spinner size={10} />}</span>
+            </div>
+          )
+        })}
+        {!parts.length && !recording && <span className="lane-hint">{armed ? 'Press record' : 'Empty'}</span>}
         {children}
       </div>
     </div>
@@ -1051,25 +1048,16 @@ function NotesBox({ value, onSave }: { value: string; onSave: (v: string) => voi
 
 // ---- one track: mixer and takes ----
 
-function TrackSheet({ t, song, onMove, onClose, onSave, onReload, onDeleted, ready, onReady }: {
-  t: Track; song: Song; onMove: (take: Take, to: number | 'new') => void; onClose: () => void; onSave: (p: Partial<Track>) => void; onReload: () => Promise<void>; onDeleted: () => void
-  ready: Record<number, boolean>; onReady: (id: number) => void
+function TrackSheet({ t, onOpenPart, onClose, onSave, onDeleted }: {
+  t: Track; onOpenPart: (k: Take) => void; onClose: () => void; onSave: (p: Partial<Track>) => void; onDeleted: () => void
 }) {
   const { toast } = useToast()
   const [name, setName] = useState(t.name)
-  const [del, setDel] = useState<'track' | Take | null>(null)
+  const [del, setDel] = useState(false)
   const [vol, setVol] = useState(t.volume)
   const [pan, setPan] = useState(t.pan)
   useEffect(() => { setVol(t.volume); setPan(t.pan) }, [t.volume, t.pan])
-  const k = activeTake(t)
-  const pick = async (take: Take) => {
-    onSave({ take_id: take.id })
-    if (!ready[take.id]) loadTake(take.id).then(() => onReady(take.id)).catch(e => toast(errMsg(e), 'err'))
-  }
-  const nudge = async (take: Take, ms: number) => {
-    try { await api.put(`${V1}/takes/${take.id}`, { offset_ms: take.offset_ms + ms }); await onReload() } catch (e) { toast(errMsg(e), 'err') }
-  }
-  const like = async (take: Take) => { try { await api.put(`${V1}/takes/${take.id}`, { liked: !take.liked }); await onReload() } catch (e) { toast(errMsg(e), 'err') } }
+  const parts = [...playingTakes(t)].sort((a, b) => a.offset_ms - b.offset_ms)
   return (
     <Modal title={<span className="row" style={{ gap: 8 }}><span className="trk-ico" style={{ ['--trk' as string]: colorOf(t) }}><Icon name={instrumentOf(t.instrument).icon} size={14} /></span>{t.name}</span>} onClose={onClose}>
       <div className="stack">
@@ -1088,15 +1076,69 @@ function TrackSheet({ t, song, onMove, onClose, onSave, onReload, onDeleted, rea
           <span style={{ width: 16 }} />
           <Switch checked={t.solo} onChange={v => onSave({ solo: v })} label="Solo" /><span className="small">Solo</span>
         </div>
-
         <div>
-          <h4 className="sheet-h">Takes {t.takes.length > 0 && <span className="muted small">— the one picked plays</span>}</h4>
-          {!t.takes.length && <p className="muted small">Nothing recorded on this track yet.</p>}
+          <h4 className="sheet-h">Parts {parts.length > 0 && <span className="muted small">— all of them play; where two overlap, the one on top</span>}</h4>
+          {!parts.length && <p className="muted small">Nothing recorded on this track yet.</p>}
           <ul className="takes">
-            {[...t.takes].reverse().map(take => (
-              <li key={take.id} className={`take-row ${take.id === t.take_id ? 'cur' : ''}`}>
-                <button type="button" className="take-pick" onClick={() => pick(take)} aria-pressed={take.id === t.take_id} title="Play this take">
-                  <span className={`radio ${take.id === t.take_id ? 'on' : ''}`} />
+            {parts.map(k => {
+              const tries = attemptsOf(t, k.part).length
+              return (
+                <li key={k.part} className="take-row">
+                  <button type="button" className="take-pick" onClick={() => onOpenPart(k)} title="Its takes, line it up, move it">
+                    <span className="grow min0">
+                      <b>{clock(k.offset_ms / 1000)} – {clock((k.offset_ms + k.duration_ms) / 1000)}</b> <span className="muted small">{tries > 1 ? `${tries} takes · take ${k.number} plays` : `take ${k.number}`}</span>
+                      <Waveform peaks={k.peaks} pxPerSec={Math.max(4, 240 / Math.max(1, k.duration_ms / 1000))} width={240} height={22} color={colorOf(t)} className="take-mini" />
+                    </span>
+                    <Icon name="chevron-right" size={15} />
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+        <div className="row"><button type="button" className="btn ghost danger-text sm" onClick={() => setDel(true)}><Icon name="trash" size={14} />Delete this track</button></div>
+      </div>
+      {del && <Confirm title={`Delete ${t.name}?`} message={`The track and its ${t.takes.length} ${t.takes.length === 1 ? 'take' : 'takes'} go.`} confirmLabel="Delete"
+        onCancel={() => setDel(false)} onConfirm={async () => {
+          setDel(false)
+          try { await api.del(`${V1}/tracks/${t.id}`); onDeleted(); announceChange() } catch (e) { toast(errMsg(e), 'err') }
+        }} />}
+    </Modal>
+  )
+}
+
+/** One part of a track: its takes (pick the one that plays), lining it up, moving it to another track, deleting it. */
+function PartSheet({ t, part, tracks, onClose, onReload, onMove, ready, onReady }: {
+  t: Track; part: number; tracks: Track[]; onClose: () => void; onReload: () => Promise<void>; onMove: (take: Take, to: number | 'new') => void
+  ready: Record<number, boolean>; onReady: (id: number) => void
+}) {
+  const { toast } = useToast()
+  const [del, setDel] = useState<'part' | Take | null>(null)
+  const tries = attemptsOf(t, part)
+  const k = tries.find(x => x.plays) || tries.at(-1)
+  if (!k) return null
+  const pick = async (take: Take) => {
+    try { await api.put(`${V1}/takes/${take.id}`, { plays: true }); await onReload() } catch (e) { toast(errMsg(e), 'err') }
+    if (!ready[take.id]) loadTake(take.id).then(() => onReady(take.id)).catch(e => toast(errMsg(e), 'err'))
+  }
+  const nudge = async (take: Take, ms: number) => {
+    try { await api.put(`${V1}/takes/${take.id}`, { offset_ms: take.offset_ms + ms }); await onReload() } catch (e) { toast(errMsg(e), 'err') }
+  }
+  const like = async (take: Take) => { try { await api.put(`${V1}/takes/${take.id}`, { liked: !take.liked }); await onReload() } catch (e) { toast(errMsg(e), 'err') } }
+  const moveItems: MenuItem[] = [
+    ...tracks.filter(x => x.id !== t.id).map((x): MenuItem => ({ label: `Move to ${x.name}`, icon: instrumentOf(x.instrument).icon, onSelect: () => onMove(k, x.id) })),
+    { label: 'Move to a new track', icon: 'plus', onSelect: () => onMove(k, 'new') },
+  ]
+  return (
+    <Modal title={<span className="row" style={{ gap: 8 }}><span className="trk-ico" style={{ ['--trk' as string]: colorOf(t) }}><Icon name={instrumentOf(t.instrument).icon} size={14} /></span>{t.name} · {clock(k.offset_ms / 1000)} – {clock((k.offset_ms + k.duration_ms) / 1000)}</span>} onClose={onClose}>
+      <div className="stack">
+        <div>
+          <h4 className="sheet-h">Takes of this part {tries.length > 1 && <span className="muted small">— the one picked plays; record over the part again for another</span>}</h4>
+          <ul className="takes">
+            {[...tries].reverse().map(take => (
+              <li key={take.id} className={`take-row ${take.plays ? 'cur' : ''}`}>
+                <button type="button" className="take-pick" onClick={() => pick(take)} aria-pressed={take.plays} title="Play this take">
+                  <span className={`radio ${take.plays ? 'on' : ''}`} />
                   <span className="grow min0">
                     <b>Take {take.number}</b> <span className="muted small">{clock(take.duration_ms / 1000, false)} · {ago(take.created_at)}{take.source !== 'recorded' ? ` · from ${take.source === 'upload' ? 'a file' : take.source === 'files' ? 'Pocket Files' : 'Pocket Music'}` : ''}</span>
                     <Waveform peaks={take.peaks} pxPerSec={Math.max(4, 240 / Math.max(1, take.duration_ms / 1000))} width={240} height={22} color={colorOf(t)} className="take-mini" />
@@ -1105,23 +1147,15 @@ function TrackSheet({ t, song, onMove, onClose, onSave, onReload, onDeleted, rea
                 <button type="button" className={`btn ghost icon-only sm ${take.liked ? 'liked' : ''}`} onClick={() => like(take)} title={take.liked ? 'Unmark' : 'Mark as a good one'} aria-label="Good take"><Icon name="heart" size={15} /></button>
                 <MenuButton label="Take" align="right" width={230} items={() => [
                   { label: 'Download', icon: 'download', onSelect: () => { window.location.href = `${V1}/takes/${take.id}/audio?download=1` } },
-                  ...(song.tracks || []).filter(x => x.id !== t.id).map((x): MenuItem => activeTake(x)
-                    ? { label: `Move to ${x.name}`, icon: instrumentOf(x.instrument).icon, submenu: [
-                        { heading: `${x.name} already plays a part` },
-                        { label: `Play it instead on ${x.name}`, icon: 'repeat', onSelect: () => onMove(take, x.id) },
-                      ] }
-                    : { label: `Move to ${x.name}`, icon: instrumentOf(x.instrument).icon, onSelect: () => onMove(take, x.id) }),
-                  { label: 'Move to a new track', icon: 'plus', onSelect: () => onMove(take, 'new') },
                   { label: 'Delete this take', icon: 'trash', danger: true, onSelect: () => setDel(take) },
                 ]}><Icon name="more" size={16} /></MenuButton>
               </li>
             ))}
           </ul>
         </div>
-
-        {k && <div>
+        <div>
           <h4 className="sheet-h">Line it up <span className="muted small">— take {k.number} starts at {(k.offset_ms / 1000).toFixed(3)} s</span></h4>
-          <p className="muted small">If this take sounds early or late against the others, move it a little. (Measure your device once in Settings → Recording and new takes line up by themselves.)</p>
+          <p className="muted small">If this take sounds early or late against the others, move it a little (to move the whole part, drag it on the timeline). Measure your device once in Settings → Recording and new takes line up by themselves.</p>
           <div className="row wrap">
             <button type="button" className="btn sm" onClick={() => nudge(k, -50)}>−50 ms</button>
             <button type="button" className="btn sm" onClick={() => nudge(k, -10)}>−10 ms</button>
@@ -1129,16 +1163,21 @@ function TrackSheet({ t, song, onMove, onClose, onSave, onReload, onDeleted, rea
             <button type="button" className="btn sm" onClick={() => nudge(k, 50)}>+50 ms</button>
           </div>
           <p className="muted small mt">{k.device && <>{k.device} · </>}{k.sample_rate ? `${(k.sample_rate / 1000).toFixed(1)} kHz` : ''}{k.channels === 2 ? ' stereo' : ' mono'} · {fmtBytes(k.size)}{k.latency_ms ? ` · ${k.latency_ms} ms delay taken out` : ''}</p>
-        </div>}
-        <div className="row"><button type="button" className="btn ghost danger-text sm" onClick={() => setDel('track')}><Icon name="trash" size={14} />Delete this track</button></div>
+        </div>
+        <div className="row wrap">
+          <MenuButton label="Move this part to another track" className="btn sm" items={moveItems} width={240}><Icon name="corner-down-right" size={14} />Move to…</MenuButton>
+          <button type="button" className="btn ghost danger-text sm" onClick={() => setDel('part')}><Icon name="trash" size={14} />Delete this part</button>
+        </div>
       </div>
-      {del && <Confirm title={del === 'track' ? `Delete ${t.name}?` : `Delete take ${(del as Take).number}?`} message={del === 'track' ? `The track and its ${t.takes.length} ${t.takes.length === 1 ? 'take' : 'takes'} go.` : 'The recording is gone for good.'} confirmLabel="Delete"
+      {del && <Confirm title={del === 'part' ? 'Delete this part?' : `Delete take ${(del as Take).number}?`}
+        message={del === 'part' ? `${tries.length === 1 ? 'Its recording is' : `All ${tries.length} takes of it are`} gone for good.` : 'The recording is gone for good.'} confirmLabel="Delete"
         onCancel={() => setDel(null)} onConfirm={async () => {
           const d = del; setDel(null)
           try {
-            if (d === 'track') { await api.del(`${V1}/tracks/${t.id}`); onDeleted() } else { await api.del(`${V1}/takes/${(d as Take).id}`); await onReload() }
+            if (d === 'part') { for (const x of tries) await api.del(`${V1}/takes/${x.id}`); onClose() } else await api.del(`${V1}/takes/${(d as Take).id}`)
+            await onReload()
             announceChange()
-          } catch (e) { toast(errMsg(e), 'err') }
+          } catch (e) { toast(errMsg(e), 'err'); await onReload() }
         }} />}
     </Modal>
   )
@@ -1181,7 +1220,7 @@ function MixDown({ song, tracks, range, onClose }: { song: Song; tracks: Track[]
   const [name, setName] = useState(range ? `${song.title} (${rangeLabel(range)})` : `${song.title} — mix`)
   const [mix, setMix] = useState<Mix | null>(null)
   const [pct, setPct] = useState(0)
-  const heard = tracks.filter(t => audible(t, tracks) && activeTake(t))
+  const heard = tracks.filter(t => audible(t, tracks) && playingTakes(t).length)
   const go = async () => {
     try {
       setStep('mixing')

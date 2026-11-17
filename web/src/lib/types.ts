@@ -25,6 +25,8 @@ export type Instrument = 'voice' | 'guitar' | 'bass' | 'keys' | 'drums' | 'strin
 
 export interface Take {
   id: number; song_id: number; track_id: number; number: number; mime: string; size: number; duration_ms: number; offset_ms: number; latency_ms: number
+  /** the part it is an attempt at (the id of the part's first take); `plays` = the attempt heard; where parts overlap, the higher layer is heard */
+  part: number; plays: boolean; layer: number
   sample_rate: number; channels: number; peaks: string; source: 'recorded' | 'upload' | 'files' | 'music'; source_ref: string; device: string; note: string; liked: boolean; created_at: string
 }
 

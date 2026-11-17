@@ -247,10 +247,11 @@ a.stat:hover { background: var(--hover); }
 .lane-hint { position: sticky; left: 8px; top: 0; display: inline-block; padding: 19px 8px; font-size: 12px; color: var(--faint); pointer-events: none; }
 .take { --trk: var(--accent); position: absolute; top: 5px; bottom: 5px; border-radius: 7px; background: color-mix(in srgb, var(--trk) 13%, var(--surface)); border: 1px solid color-mix(in srgb, var(--trk) 45%, transparent); overflow: hidden; cursor: pointer; }
 .take .wave { position: absolute; left: 0; top: 0; }
-.take.dragging { z-index: 6; cursor: grabbing; opacity: .9; box-shadow: 0 6px 18px rgba(0,0,0,.18); border-color: var(--trk); }
+.take.dragging { cursor: grabbing; opacity: .9; box-shadow: 0 6px 18px rgba(0,0,0,.18); border-color: var(--trk); }
 .take.dragging .take-tag { background: var(--surface); padding: 0 5px; border-radius: 5px; white-space: nowrap; }
 .tl-row.drop-to .lane { background-color: color-mix(in srgb, var(--accent) 9%, transparent); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--accent) 55%, transparent); }
-.tl-row.dragging-from .lane { cursor: grabbing; }
+.tl-row .lane { isolation: isolate; }
+.tl-row.dragging-from .lane { cursor: grabbing; z-index: 5; }
 .take-tag { position: absolute; left: 6px; top: 2px; font-size: 10.5px; font-weight: 650; color: color-mix(in srgb, var(--trk) 80%, var(--text)); display: inline-flex; align-items: center; gap: 4px; pointer-events: none; }
 .ruler { position: relative; flex-shrink: 0; height: 30px; cursor: pointer; user-select: none; }
 .rl-bar { position: absolute; top: 14px; bottom: 0; border-left: 1px solid var(--border-strong); }
