@@ -202,9 +202,12 @@ function SongPage() {
       return
     }
     const bar = song.beats * 60 / song.tempo
-    const from = Math.max(0, Math.floor((playing ? p.position() : pos) / bar + 1e-6) * bar)
+    const here = Math.max(0, playing ? p.position() : pos)
+    // no count-in: it records from where the song is, at once; with one, from the start of that bar after the clicks
+    const from = song.count_in > 0 ? Math.max(0, Math.floor(here / bar + 1e-6) * bar) : here
     recFrom.current = from
-    p.play(tracks.filter(t => t.id !== target.id), from - song.count_in * bar, { ...opts(), countInFrom: from })
+    if (song.count_in > 0) p.play(tracks.filter(t => t.id !== target.id), from - song.count_in * bar, { ...opts(), countInFrom: from })
+    else p.play(tracks.filter(t => t.id !== target.id), from, opts())
     mic.current.start()
     setPlaying(true)
     setRec('rolling')
@@ -225,7 +228,7 @@ function SongPage() {
     m.close()
     mic.current = null
     const len = placed.channels[0]?.length || 0
-    if (!target || len < got.rate * 0.3) { setRec('off'); toast('Too short to keep: record at least a moment after the count-in', 'err'); return }
+    if (!target || len < got.rate * 0.3) { setRec('off'); toast('Too short to keep: record for at least a moment', 'err'); return }
     try {
       const raised = settings?.level_takes !== false ? levelTake(placed.channels) : 0
       const wav = encodeWav(placed.channels, got.rate)

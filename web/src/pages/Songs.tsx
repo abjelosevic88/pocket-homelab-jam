@@ -128,7 +128,7 @@ export function SongForm({ song, band, onSaved }: { song?: Song; band?: Band | n
   const [f, setF] = useState({
     band_id: song ? song.band_id || 0 : band?.id || 0,
     title: song?.title || '', artist: song?.artist || '', key_name: song?.key_name || '', tempo: song?.tempo || settings?.tempo || 100,
-    beats: song?.beats || settings?.beats || 4, beat_unit: song?.beat_unit || 4, count_in: song?.count_in ?? settings?.count_in ?? 1, click: song?.click ?? settings?.click ?? true,
+    beats: song?.beats || settings?.beats || 4, beat_unit: song?.beat_unit || 4, count_in: song?.count_in ?? settings?.count_in ?? 0, click: song?.click ?? settings?.click ?? true,
   })
   const [busy, setBusy] = useState(false)
   const tap = useTapTempo(bpm => setF(x => ({ ...x, tempo: bpm })))

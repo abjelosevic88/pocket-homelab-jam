@@ -15,7 +15,7 @@ var boxKeys = map[string]bool{"title": true, "setup_complete": true}
 // defaults returns the settings a person starts with.
 func (s *Store) defaults() Settings {
 	return Settings{Title: DefaultTitle, DateFormat: "auto", TimeFormat: "auto", WeekStart: 1,
-		Tempo: 100, Beats: 4, CountIn: 1, Click: true,
+		Tempo: 100, Beats: 4, CountIn: 0, Click: true,
 		ClickSound: "click", ClickVolume: 70, KeepAwake: true, LevelTakes: true,
 		A4: 440, TunerPreset: "guitar",
 		PracticeTo: "off", FilesFolder: "Jam",
