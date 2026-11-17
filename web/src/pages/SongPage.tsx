@@ -498,7 +498,7 @@ function SongPage() {
     window.addEventListener('keydown', key)
     window.addEventListener('keyup', key)
   }
-  /** Move a part (all its attempts) to a new start and/or onto another track ('new' makes a track for it); it lands on top. With Undo. */
+  /** Move a part (all its attempts) to a new start and/or onto another track ('new' makes a track for it); it lands on top. Quiet: no message, ⌘/Ctrl+Z undoes. */
   const moveTake = async (k: Take, from: Track, offset: number, to: number | 'new') => {
     const restart = (ts: Track[]) => { if (playingRef.current && player.current) getPlayer().play(ts, Math.max(0, player.current.position()), opts()) }
     const shift = offset - k.offset_ms
@@ -513,8 +513,7 @@ function SongPage() {
       restart(fresh.tracks || [])
       announceChange()
       const made = to === 'new' ? target : null
-      const where = target && target.id !== from.id ? `to ${made ? 'a new track' : target.name}` : `to ${clock(offset / 1000)}`
-      const entry = { done: false, run: async () => {
+            const entry = { done: false, run: async () => {
         if (entry.done) return
         entry.done = true
         undos.current = undos.current.filter(x => x !== entry)
@@ -525,11 +524,9 @@ function SongPage() {
           setSong(back)
           restart(back.tracks || [])
           announceChange()
-          toast('Move undone', 'ok')
         } catch (e) { toast(errMsg(e), 'err') }
       } }
       undos.current.push(entry)
-      toast(`Moved ${where} · ${navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl'}+Z undoes`, 'ok', { label: 'Undo', run: entry.run })
     } catch (e) { toast(errMsg(e), 'err'); load() }
   }
   function selectItems(): MenuItem[] {
