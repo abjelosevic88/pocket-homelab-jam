@@ -636,10 +636,19 @@ func (s *Server) handleUpdateTake(w http.ResponseWriter, r *http.Request) {
 		OffsetMS *int64  `json:"offset_ms"`
 		Note     *string `json:"note"`
 		Liked    *bool   `json:"liked"`
+		TrackID  *int64  `json:"track_id"`
 	}
 	if err := decode(r, &in); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON")
 		return
+	}
+	if in.TrackID != nil && *in.TrackID != k.TrackID {
+		moved, err := s.store.MoveTake(ctx, uid, k.ID, *in.TrackID)
+		if err != nil {
+			s.fail(w, err, "track")
+			return
+		}
+		k = moved
 	}
 	if in.OffsetMS != nil {
 		if *in.OffsetMS < -maxLengthMS || *in.OffsetMS > maxLengthMS {

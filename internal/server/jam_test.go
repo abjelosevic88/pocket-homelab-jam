@@ -315,3 +315,41 @@ func TestDemoData(t *testing.T) {
 		t.Fatal("demo data lands only in the owner's account")
 	}
 }
+
+func TestMoveTake(t *testing.T) {
+	a := newApp(t, nil)
+	sid := id(a.ok(a.alice, "POST", "/api/v1/songs", map[string]any{"title": "Move"}))
+	gt := a.ok(a.alice, "POST", "/api/v1/songs/"+sid+"/tracks", map[string]any{"instrument": "guitar"})
+	g := id(gt)
+	bt := a.ok(a.alice, "POST", "/api/v1/songs/"+sid+"/tracks", map[string]any{"instrument": "bass"})
+	b := id(bt)
+	_, k1 := a.upload(a.alice, "/api/v1/tracks/"+g+"/takes", map[string]any{"duration_ms": 500}, tone(0.5), "take.wav")
+	_, k2 := a.upload(a.alice, "/api/v1/tracks/"+g+"/takes", map[string]any{"duration_ms": 500}, tone(0.5), "take.wav")
+	_, kb := a.upload(a.alice, "/api/v1/tracks/"+b+"/takes", map[string]any{"duration_ms": 500}, tone(0.5), "take.wav")
+
+	// take 2 of the guitar goes to the bass track, later: it plays there, take 1 plays on the guitar again
+	a.ok(a.alice, "PUT", "/api/v1/takes/"+id(k2), map[string]any{"track_id": num(bt, "id"), "offset_ms": 2000})
+	full := a.ok(a.alice, "GET", "/api/v1/songs/"+sid, nil)["tracks"].([]any)
+	tg, tb := full[0].(map[string]any), full[1].(map[string]any)
+	if num(tg, "take_id") != num(k1, "id") || len(tg["takes"].([]any)) != 1 {
+		t.Fatalf("guitar after the move: %v", tg)
+	}
+	if num(tb, "take_id") != num(k2, "id") || len(tb["takes"].([]any)) != 2 {
+		t.Fatalf("bass after the move: %v", tb)
+	}
+	moved := tb["takes"].([]any)[1].(map[string]any)
+	if num(moved, "number") != 2 || num(moved, "offset_ms") != 2000 || num(kb, "number") != 1 {
+		t.Fatalf("moved take: %v", moved)
+	}
+	// the last take off a track leaves it empty
+	a.ok(a.alice, "PUT", "/api/v1/takes/"+id(k1), map[string]any{"track_id": num(bt, "id")})
+	tg = a.ok(a.alice, "GET", "/api/v1/songs/"+sid, nil)["tracks"].([]any)[0].(map[string]any)
+	if tg["take_id"] != nil {
+		t.Fatalf("empty guitar still plays: %v", tg)
+	}
+	// not to another song's track, nor someone else's
+	other := id(a.ok(a.alice, "POST", "/api/v1/songs", map[string]any{"title": "Other"}))
+	ot := a.ok(a.alice, "POST", "/api/v1/songs/"+other+"/tracks", map[string]any{"instrument": "voice"})
+	a.expect(404, a.alice, "PUT", "/api/v1/takes/"+id(kb), map[string]any{"track_id": num(ot, "id")})
+	a.expect(404, a.bob, "PUT", "/api/v1/takes/"+id(kb), map[string]any{"track_id": num(ot, "id")})
+}

@@ -39,6 +39,18 @@ const colorOf = (t: Track) => t.color || instrumentOf(t.instrument).color
 
 type RecState = 'off' | 'opening' | 'rolling' | 'saving'
 
+/** The tracks with a take moved to another start and/or track: it plays there; the track it left plays its newest other take. */
+function moveLocally(tracks: Track[], takeId: number, to: number, offset: number): Track[] {
+  const k = tracks.flatMap(t => t.takes).find(x => x.id === takeId)
+  if (!k) return tracks
+  return tracks.map(t => {
+    let takes = t.takes.filter(x => x.id !== takeId)
+    if (t.id === to) takes = [...takes, { ...k, track_id: to, offset_ms: offset }]
+    const take_id = t.id === to ? takeId : t.take_id === takeId ? (takes.length ? takes[takes.length - 1].id : null) : t.take_id
+    return { ...t, takes, take_id }
+  })
+}
+
 export default function SongPage() {
   const { id } = useParams()
   const sid = Number(id)
@@ -378,6 +390,97 @@ export default function SongPage() {
     timeAt: x => (x - (ruler.current?.getBoundingClientRect().left ?? 0)) / px,
   })
   const selectAll = () => { if (songLen > 0) setSel({ a: 0, b: songLen }) }
+
+  // ---- moving a part: drag a take left/right (whole beats; Alt for free) and up/down to another track (or the empty row for a new one) ----
+  const [clip, setClip] = useState<null | { take: Take; from: number; dx: number; dy: number; to: number | 'new' }>(null)
+  const playingRef = useRef(playing)
+  playingRef.current = playing
+  const startClip = (e: React.PointerEvent<HTMLElement>, t: Track, k: Take) => {
+    if (e.button !== 0 || e.pointerType === 'touch' || rec !== 'off' || !song) return
+    e.preventDefault()
+    const x0 = e.clientX, y0 = e.clientY
+    const beat = 60 / song.tempo
+    const rowOf = (el: Element | null) => el?.closest<HTMLElement>('[data-drop]')
+    const home = rowOf(e.currentTarget)
+    let moved = false
+    let last: NonNullable<typeof clip> | null = null
+    const at = (ev: PointerEvent | KeyboardEvent, cx: number, cy: number) => {
+      let dx = (cx - x0) / px
+      if (!ev.altKey) dx = Math.round(dx / beat) * beat
+      const off = Math.max(Math.min(k.offset_ms, 0), Math.round(k.offset_ms + dx * 1000))
+      let to: number | 'new' = t.id, dy = 0
+      const rows = [...(scroller.current?.querySelectorAll<HTMLElement>('[data-drop]') || [])]
+      const row = rows.find(r => { const b = r.getBoundingClientRect(); return cy >= b.top && cy < b.bottom })
+      if (row && home) {
+        to = row.dataset.drop === 'new' ? 'new' : Number(row.dataset.drop)
+        dy = row.getBoundingClientRect().top - home.getBoundingClientRect().top
+      }
+      return { take: k, from: t.id, dx: (off - k.offset_ms) / 1000, dy, to }
+    }
+    let cx = x0, cy = y0
+    const move = (ev: PointerEvent) => {
+      cx = ev.clientX; cy = ev.clientY
+      if (!moved && Math.hypot(cx - x0, cy - y0) < 5) return
+      moved = true
+      last = at(ev, cx, cy)
+      setClip(last)
+    }
+    const key = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') { moved = false; last = null; done(); setClip(null); return }
+      if (moved && ev.key === 'Alt') { last = at(ev, cx, cy); setClip(last) }
+    }
+    const done = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', cancel)
+      window.removeEventListener('keydown', key)
+      window.removeEventListener('keyup', key)
+    }
+    const up = () => {
+      done()
+      setClip(null)
+      if (!moved || !last) return
+      // the click after a drag is not a click on the part
+      const eat = (ev: Event) => { ev.preventDefault(); ev.stopPropagation() }
+      window.addEventListener('click', eat, { capture: true, once: true })
+      window.setTimeout(() => window.removeEventListener('click', eat, { capture: true }), 300)
+      if (last.dx !== 0 || last.to !== t.id) void moveTake(k, t, Math.round(k.offset_ms + last.dx * 1000), last.to)
+    }
+    const cancel = () => { done(); setClip(null) }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', cancel)
+    window.addEventListener('keydown', key)
+    window.addEventListener('keyup', key)
+  }
+  /** Put a take at a new start and/or on another track ('new' makes a track for it), with Undo. */
+  const moveTake = async (k: Take, from: Track, offset: number, to: number | 'new') => {
+    const restart = (ts: Track[]) => { if (playingRef.current && player.current) getPlayer().play(ts, Math.max(0, player.current.position()), opts()) }
+    if (to !== 'new') setSong(s => s && { ...s, tracks: moveLocally(s.tracks || [], k.id, to, offset) })
+    try {
+      let target = to === 'new' ? null : tracks.find(x => x.id === to) || null
+      const wasPlaying = target && target.id !== from.id ? target.take_id : null
+      if (to === 'new') target = await api.post<Track>(`${V1}/songs/${sid}/tracks`, { instrument: from.instrument })
+      await api.put(`${V1}/takes/${k.id}`, { offset_ms: offset, ...(target && target.id !== from.id ? { track_id: target.id } : {}) })
+      const fresh = await api.get<Song>(`${V1}/songs/${sid}`)
+      setSong(fresh)
+      restart(fresh.tracks || [])
+      announceChange()
+      const made = to === 'new' ? target : null
+      const where = target && target.id !== from.id ? `to ${made ? 'a new track' : target.name}` : `to ${clock(offset / 1000)}`
+      toast(`Moved ${where}`, 'ok', { label: 'Undo', run: async () => {
+        try {
+          await api.put(`${V1}/takes/${k.id}`, { offset_ms: k.offset_ms, track_id: from.id })
+          if (from.take_id && from.take_id !== k.id) await api.put(`${V1}/tracks/${from.id}`, { take_id: from.take_id })
+          if (made) await api.del(`${V1}/tracks/${made.id}`)
+          else if (target && wasPlaying && target.id !== from.id) await api.put(`${V1}/tracks/${target.id}`, { take_id: wasPlaying })
+          const back = await api.get<Song>(`${V1}/songs/${sid}`)
+          setSong(back)
+          restart(back.tracks || [])
+        } catch (e) { toast(errMsg(e), 'err') }
+      } })
+    } catch (e) { toast(errMsg(e), 'err'); load() }
+  }
   function selectItems(): MenuItem[] {
     return [
       { label: 'Select a part…', icon: 'scissors', disabled: songLen <= 0, onSelect: () => { selectAll(); setFocusSel(n => n + 1) } },
@@ -520,16 +623,18 @@ export default function SongPage() {
             </div>
             {tracks.map(t => (
               <TrackRow key={t.id} t={t} tracks={tracks} headW={headW} laneW={laneW} px={px} armed={armed === t.id} recording={rec === 'rolling' && armed === t.id}
+                drag={clip && clip.from === t.id ? clip : null} drop={!!clip && clip.to === t.id && clip.from !== t.id} onTakeDown={startClip}
+                dragTip={clip && clip.from === t.id ? `${clock(Math.max(0, clip.take.offset_ms / 1000 + clip.dx))} · bar ${barBeat(Math.max(0, clip.take.offset_ms / 1000 + clip.dx), song.tempo, song.beats)}${clip.to !== t.id ? ` → ${clip.to === 'new' ? 'new track' : tracks.find(x => x.id === clip.to)?.name || ''}` : ''}` : ''}
                 loading={!!activeTake(t) && !ready[activeTake(t)!.id]} onArm={() => !busy && setArmed(armed === t.id ? null : t.id)} onOpen={() => setSheet(t.id)}
                 onMute={() => saveTrack(t, { muted: !t.muted })} onSolo={() => saveTrack(t, { solo: !t.solo })} onSeek={seek} {...laneEvents(t)}>
                 {marks.filter(m => m.track_id === t.id).map(m => <MarkFlag key={m.id} m={m} px={px} color={colorOfMark(m)} onOpen={openMark} onChange={changeMark} onDelete={removeMark} />)}
               </TrackRow>
             ))}
-            <div className="tl-row">
+            <div className={`tl-row ${clip?.to === 'new' ? 'drop-to' : ''}`} data-drop="new">
               <div className="tl-head tl-add" style={{ width: headW }}>
                 <button type="button" className="btn ghost sm" onClick={() => setAdding({ intent: 'any' })} disabled={busy}><Icon name="plus" size={14} />Add a track</button>
               </div>
-              <div className="lane lane-empty" style={{ width: laneW }} />
+              <div className="lane lane-empty" style={{ width: laneW }}>{clip?.to === 'new' && <span className="lane-hint">Drop for a new track</span>}</div>
             </div>
             <div className="mark-guides" style={{ left: headW }} aria-hidden="true">
               {marks.filter(m => !m.track_id).map(m => <div key={m.id} className={`mark-guide ${m.end_ms > m.at_ms ? 'stretch' : ''}`} style={{ left: m.at_ms / 1000 * px, width: m.end_ms > m.at_ms ? (m.end_ms - m.at_ms) / 1000 * px : undefined, ['--mk' as string]: colorOfMark(m) }} />)}
@@ -615,8 +720,9 @@ function Ruler({ width, px, bar, beats, rulerRef, onStrip, onContextMenu, onHold
     onPointerDown={e => { if (e.button !== 0) return; onHold(e); onStrip(e) }}>{marks}{children}</div>
 }
 
-function TrackRow({ t, tracks, headW, laneW, px, armed, recording, loading, onArm, onOpen, onMute, onSolo, onSeek, onContextMenu, onHold, children }: {
+function TrackRow({ t, tracks, headW, laneW, px, armed, recording, loading, drag, drop, dragTip, onTakeDown, onArm, onOpen, onMute, onSolo, onSeek, onContextMenu, onHold, children }: {
   t: Track; tracks: Track[]; headW: number; laneW: number; px: number; armed: boolean; recording: boolean; loading: boolean
+  drag: { dx: number; dy: number } | null; drop: boolean; dragTip: string; onTakeDown: (e: React.PointerEvent<HTMLElement>, t: Track, k: Take) => void
   onArm: () => void; onOpen: () => void; onMute: () => void; onSolo: () => void; onSeek: (s: number) => void
   onContextMenu: (e: React.MouseEvent<HTMLElement>) => void; onHold: (e: React.PointerEvent<HTMLElement>) => void; children?: React.ReactNode
 }) {
@@ -624,7 +730,7 @@ function TrackRow({ t, tracks, headW, laneW, px, armed, recording, loading, onAr
   const heard = audible(t, tracks)
   const color = colorOf(t)
   return (
-    <div className={`tl-row ${heard ? '' : 'quiet'}`}>
+    <div className={`tl-row ${heard ? '' : 'quiet'} ${drop ? 'drop-to' : ''} ${drag ? 'dragging-from' : ''}`} data-drop={t.id}>
       <div className="tl-head trk-head" style={{ width: headW, ['--trk' as string]: color }}>
         <button type="button" className="trk-name" onClick={onOpen} title={`${t.name}: volume, balance, takes`}>
           <span className="trk-ico"><Icon name={instrumentOf(t.instrument).icon} size={14} /></span>
@@ -638,9 +744,10 @@ function TrackRow({ t, tracks, headW, laneW, px, armed, recording, loading, onAr
       </div>
       <div className={`lane ${armed ? 'armed' : ''} ${recording ? 'recording' : ''}`} style={{ width: laneW }} onContextMenu={onContextMenu}
         onPointerDown={e => { if (e.button !== 0) return; onHold(e); if ((e.target as HTMLElement).closest('.take')) return; const r = e.currentTarget.getBoundingClientRect(); onSeek((e.clientX - r.left) / px) }}>
-        {k && <div className="take" style={{ left: k.offset_ms / 1000 * px, width: Math.max(4, k.duration_ms / 1000 * px), ['--trk' as string]: color }} onClick={onOpen} title={`Take ${k.number}`}>
+        {k && <div className={`take ${drag ? 'dragging' : ''}`} style={{ left: k.offset_ms / 1000 * px, width: Math.max(4, k.duration_ms / 1000 * px), ['--trk' as string]: color, transform: drag ? `translate(${drag.dx * px}px, ${drag.dy}px)` : undefined }}
+          onClick={onOpen} onPointerDown={e => onTakeDown(e, t, k)} title={`Take ${k.number} — click for its takes, drag to move it (Alt: off the beat)`}>
           <Waveform peaks={k.peaks} pxPerSec={px} width={Math.min(Math.max(4, Math.round(k.duration_ms / 1000 * px)), 16000)} height={46} color={color} />
-          <span className="take-tag">{t.takes.length > 1 ? `take ${k.number}` : ''}{loading && <Spinner size={10} />}</span>
+          <span className="take-tag">{drag ? dragTip : t.takes.length > 1 ? `take ${k.number}` : ''}{loading && <Spinner size={10} />}</span>
         </div>}
         {!k && !recording && <span className="lane-hint">{armed ? 'Press record' : 'Empty'}</span>}
         {children}
@@ -832,6 +939,9 @@ function TrackSheet({ t, song, onClose, onSave, onReload, onDeleted, ready, onRe
   const nudge = async (take: Take, ms: number) => {
     try { await api.put(`${V1}/takes/${take.id}`, { offset_ms: take.offset_ms + ms }); await onReload() } catch (e) { toast(errMsg(e), 'err') }
   }
+  const moveTo = async (take: Take, x: Track) => {
+    try { await api.put(`${V1}/takes/${take.id}`, { track_id: x.id }); await onReload(); announceChange(); toast(`Take ${take.number} moved to ${x.name}`, 'ok') } catch (e) { toast(errMsg(e), 'err') }
+  }
   const like = async (take: Take) => { try { await api.put(`${V1}/takes/${take.id}`, { liked: !take.liked }); await onReload() } catch (e) { toast(errMsg(e), 'err') } }
   return (
     <Modal title={<span className="row" style={{ gap: 8 }}><span className="trk-ico" style={{ ['--trk' as string]: colorOf(t) }}><Icon name={instrumentOf(t.instrument).icon} size={14} /></span>{t.name}</span>} onClose={onClose}>
@@ -868,6 +978,7 @@ function TrackSheet({ t, song, onClose, onSave, onReload, onDeleted, ready, onRe
                 <button type="button" className={`btn ghost icon-only sm ${take.liked ? 'liked' : ''}`} onClick={() => like(take)} title={take.liked ? 'Unmark' : 'Mark as a good one'} aria-label="Good take"><Icon name="heart" size={15} /></button>
                 <MenuButton label="Take" align="right" width={230} items={() => [
                   { label: 'Download', icon: 'download', onSelect: () => { window.location.href = `${V1}/takes/${take.id}/audio?download=1` } },
+                  ...(song.tracks || []).filter(x => x.id !== t.id).map(x => ({ label: `Move to ${x.name}`, icon: instrumentOf(x.instrument).icon, onSelect: () => moveTo(take, x) })),
                   { label: 'Delete this take', icon: 'trash', danger: true, onSelect: () => setDel(take) },
                 ]}><Icon name="more" size={16} /></MenuButton>
               </li>
