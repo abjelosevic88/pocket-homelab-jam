@@ -120,6 +120,10 @@ func (s *Store) IdeaToSong(ctx context.Context, x *Idea, so *Song, t *Track) (*T
 		return nil, err
 	}
 	k.ID, _ = res.LastInsertId()
+	if _, err := tx.ExecContext(ctx, `UPDATE takes SET part = id, plays = 1, layer = 1 WHERE id = ?`, k.ID); err != nil {
+		return nil, err
+	}
+	k.Part, k.Plays, k.Layer = k.ID, true, 1
 	if _, err := tx.ExecContext(ctx, `UPDATE tracks SET take_id = ? WHERE id = ?`, k.ID, t.ID); err != nil {
 		return nil, err
 	}

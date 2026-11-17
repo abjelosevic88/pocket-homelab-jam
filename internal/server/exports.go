@@ -327,7 +327,8 @@ func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, t
 			for _, k := range tr.Takes {
 				numbers[k.Number] = true
 			}
-			var playing *int64
+			// parts come across as they were; an export from before parts: the track's takes were attempts at one part
+			partMap := map[int64]int64{}
 			for _, k := range t.Takes {
 				if numbers[k.Number] {
 					continue
@@ -338,20 +339,26 @@ func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, t
 				}
 				nk := k
 				nk.ID, nk.UserID, nk.SongID, nk.TrackID, nk.File, nk.Size = 0, u.ID, id, tr.ID, rel, size
-				if err := s.store.CreateTake(ctx, &nk); err != nil {
+				if err := s.store.CreateTake(ctx, &nk, store.PartNew, 0); err != nil {
 					_ = os.Remove(s.mediaPath(rel))
 					return nil, err
 				}
-				if t.TakeID != nil && *t.TakeID == k.ID {
-					playing = &nk.ID
+				oldPart, plays, layer := k.Part, k.Plays, k.Layer
+				if oldPart == 0 {
+					oldPart, plays, layer = -1, t.TakeID != nil && *t.TakeID == k.ID, 1
+				}
+				if layer <= 0 {
+					layer = 1
+				}
+				part, seen := partMap[oldPart]
+				if !seen {
+					part = nk.ID
+					partMap[oldPart] = part
+				}
+				if err := s.store.SetTakePart(ctx, u.ID, nk.ID, part, plays, layer); err != nil {
+					return nil, err
 				}
 				added["takes"]++
-			}
-			if playing != nil {
-				if cur, err := s.store.GetTrack(ctx, u.ID, tr.ID); err == nil {
-					cur.TakeID = playing
-					_ = s.store.UpdateTrack(ctx, cur)
-				}
 			}
 		}
 		haveMark := map[string]bool{}

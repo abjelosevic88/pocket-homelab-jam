@@ -316,40 +316,83 @@ func TestDemoData(t *testing.T) {
 	}
 }
 
-func TestMoveTake(t *testing.T) {
+func TestParts(t *testing.T) {
 	a := newApp(t, nil)
-	sid := id(a.ok(a.alice, "POST", "/api/v1/songs", map[string]any{"title": "Move"}))
+	sid := id(a.ok(a.alice, "POST", "/api/v1/songs", map[string]any{"title": "Parts"}))
 	gt := a.ok(a.alice, "POST", "/api/v1/songs/"+sid+"/tracks", map[string]any{"instrument": "guitar"})
-	g := id(gt)
 	bt := a.ok(a.alice, "POST", "/api/v1/songs/"+sid+"/tracks", map[string]any{"instrument": "bass"})
-	b := id(bt)
-	_, k1 := a.upload(a.alice, "/api/v1/tracks/"+g+"/takes", map[string]any{"duration_ms": 500}, tone(0.5), "take.wav")
-	_, k2 := a.upload(a.alice, "/api/v1/tracks/"+g+"/takes", map[string]any{"duration_ms": 500}, tone(0.5), "take.wav")
-	_, kb := a.upload(a.alice, "/api/v1/tracks/"+b+"/takes", map[string]any{"duration_ms": 500}, tone(0.5), "take.wav")
-
-	// take 2 of the guitar goes to the bass track, later: it plays there, take 1 plays on the guitar again
-	a.ok(a.alice, "PUT", "/api/v1/takes/"+id(k2), map[string]any{"track_id": num(bt, "id"), "offset_ms": 2000})
-	full := a.ok(a.alice, "GET", "/api/v1/songs/"+sid, nil)["tracks"].([]any)
-	tg, tb := full[0].(map[string]any), full[1].(map[string]any)
-	if num(tg, "take_id") != num(k1, "id") || len(tg["takes"].([]any)) != 1 {
-		t.Fatalf("guitar after the move: %v", tg)
+	g, b := id(gt), id(bt)
+	takes := func(track string) map[float64]map[string]any {
+		out := map[float64]map[string]any{}
+		for _, x := range a.ok(a.alice, "GET", "/api/v1/songs/"+sid, nil)["tracks"].([]any) {
+			tr := x.(map[string]any)
+			if id(tr) != track {
+				continue
+			}
+			for _, k := range tr["takes"].([]any) {
+				km := k.(map[string]any)
+				out[num(km, "id")] = km
+			}
+		}
+		return out
 	}
-	if num(tb, "take_id") != num(k2, "id") || len(tb["takes"].([]any)) != 2 {
+	// a verse at 0, then a chorus at 10 s: two parts, both play
+	_, v1 := a.upload(a.alice, "/api/v1/tracks/"+g+"/takes", map[string]any{"duration_ms": 500, "offset_ms": 0}, tone(0.5), "take.wav")
+	_, c1 := a.upload(a.alice, "/api/v1/tracks/"+g+"/takes", map[string]any{"duration_ms": 500, "offset_ms": 10000}, tone(0.5), "take.wav")
+	if num(v1, "part") == num(c1, "part") || v1["plays"] != true || c1["plays"] != true {
+		t.Fatalf("two parts: %v %v", v1, c1)
+	}
+	// the verse again, over the first: another attempt at it — it plays, the first waits
+	_, v2 := a.upload(a.alice, "/api/v1/tracks/"+g+"/takes", map[string]any{"duration_ms": 500, "offset_ms": 30}, tone(0.5), "take.wav")
+	tk := takes(g)
+	if num(v2, "part") != num(v1, "part") || tk[num(v1, "id")]["plays"] != false || tk[num(v2, "id")]["plays"] != true || tk[num(c1, "id")]["plays"] != true {
+		t.Fatalf("attempt: %v", tk)
+	}
+	// a file brought in over the verse is a part of its own
+	_, f1 := a.upload(a.alice, "/api/v1/tracks/"+g+"/takes", map[string]any{"duration_ms": 500, "source": "upload"}, tone(0.5), "take.wav")
+	if num(f1, "part") == num(v1, "part") {
+		t.Fatalf("an upload joined a part: %v", f1)
+	}
+	a.ok(a.alice, "DELETE", "/api/v1/takes/"+id(f1), nil)
+	// pick the first verse back
+	a.ok(a.alice, "PUT", "/api/v1/takes/"+id(v1), map[string]any{"plays": true})
+	tk = takes(g)
+	if tk[num(v1, "id")]["plays"] != true || tk[num(v2, "id")]["plays"] != false {
+		t.Fatalf("pick: %v", tk)
+	}
+	// song length: the chorus ends last
+	if l := num(a.ok(a.alice, "GET", "/api/v1/songs/"+sid, nil), "length_ms"); l != 10500 {
+		t.Fatalf("length %v", l)
+	}
+	// the verse part (both attempts) goes to the bass, 2 s later, on top
+	_, kb := a.upload(a.alice, "/api/v1/tracks/"+b+"/takes", map[string]any{"duration_ms": 500, "offset_ms": 2000}, tone(0.5), "take.wav")
+	mv := a.ok(a.alice, "PUT", "/api/v1/parts/"+itoa(int64(num(v1, "part"))), map[string]any{"track_id": num(bt, "id"), "shift_ms": 2000})
+	if len(mv["takes"].([]any)) != 2 {
+		t.Fatalf("moved: %v", mv)
+	}
+	tb := takes(b)
+	if len(tb) != 3 || num(tb[num(v1, "id")], "offset_ms") != 2000 || num(tb[num(v2, "id")], "offset_ms") != 2030 || num(tb[num(v1, "id")], "layer") <= num(tb[num(kb, "id")], "layer") {
 		t.Fatalf("bass after the move: %v", tb)
 	}
-	moved := tb["takes"].([]any)[1].(map[string]any)
-	if num(moved, "number") != 2 || num(moved, "offset_ms") != 2000 || num(kb, "number") != 1 {
-		t.Fatalf("moved take: %v", moved)
+	if tb[num(kb, "id")]["plays"] != true || tb[num(v1, "id")]["plays"] != true {
+		t.Fatalf("both parts play on the bass: %v", tb)
 	}
-	// the last take off a track leaves it empty
-	a.ok(a.alice, "PUT", "/api/v1/takes/"+id(k1), map[string]any{"track_id": num(bt, "id")})
-	tg = a.ok(a.alice, "GET", "/api/v1/songs/"+sid, nil)["tracks"].([]any)[0].(map[string]any)
-	if tg["take_id"] != nil {
-		t.Fatalf("empty guitar still plays: %v", tg)
+	if tg := takes(g); len(tg) != 1 {
+		t.Fatalf("guitar keeps the chorus only: %v", tg)
 	}
-	// not to another song's track, nor someone else's
+	// deleting the playing attempt: the other one plays; deleting that too: the part is gone
+	a.ok(a.alice, "DELETE", "/api/v1/takes/"+id(v1), nil)
+	if takes(b)[num(v2, "id")]["plays"] != true {
+		t.Fatalf("the other attempt plays")
+	}
+	// older clients: PUT /takes track_id moves the part
+	a.ok(a.alice, "PUT", "/api/v1/takes/"+id(c1), map[string]any{"track_id": num(bt, "id")})
+	if len(takes(g)) != 0 || len(takes(b)) != 3 {
+		t.Fatalf("old move")
+	}
+	// not to another song's track, nor someone else's part
 	other := id(a.ok(a.alice, "POST", "/api/v1/songs", map[string]any{"title": "Other"}))
 	ot := a.ok(a.alice, "POST", "/api/v1/songs/"+other+"/tracks", map[string]any{"instrument": "voice"})
-	a.expect(404, a.alice, "PUT", "/api/v1/takes/"+id(kb), map[string]any{"track_id": num(ot, "id")})
-	a.expect(404, a.bob, "PUT", "/api/v1/takes/"+id(kb), map[string]any{"track_id": num(ot, "id")})
+	a.expect(404, a.alice, "PUT", "/api/v1/parts/"+itoa(int64(num(kb, "part"))), map[string]any{"track_id": num(ot, "id")})
+	a.expect(404, a.bob, "PUT", "/api/v1/parts/"+itoa(int64(num(kb, "part"))), map[string]any{"shift_ms": 10})
 }

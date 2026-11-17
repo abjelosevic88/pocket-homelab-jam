@@ -118,7 +118,7 @@ func (s *Server) seedDemo(ctx context.Context, uid int64) error {
 				k := &store.Take{UserID: uid, SongID: so.ID, TrackID: t.ID, File: rel, Mime: "audio/wav", Size: size, DurationMS: int64(len(pcm)) * 1000 / demoRate,
 					OffsetMS: offset, LatencyMS: 42, SampleRate: demoRate, Channels: 1, Peaks: peaks(pcm, demoRate), Source: "recorded", Device: "iPhone microphone",
 					Liked: n == dt.takes && dt.takes > 2, CreatedAt: ago(d.daysAgo+dt.takes-n, 3-n%3)}
-				if err := s.store.CreateTake(ctx, k); err != nil {
+				if err := s.store.CreateTake(ctx, k, store.PartAuto, 0); err != nil {
 					return err
 				}
 				last = pcm

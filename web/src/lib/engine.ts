@@ -99,7 +99,7 @@ export function decode(ctx: BaseAudioContext, data: ArrayBuffer): Promise<AudioB
 
 export interface PlayOpts { click: boolean; countInFrom?: number; tempo: number; beats: number; clickSound: string; clickVolume: number }
 
-interface Voice { src: AudioBufferSourceNode; gain: GainNode; pan: StereoPannerNode; meter: AnalyserNode; trackId: number }
+interface Voice { srcs: AudioBufferSourceNode[]; gain: GainNode; pan: StereoPannerNode; meter: AnalyserNode; trackId: number }
 
 /** Is a track heard? Solo wins over everything; muted never. */
 export function audible(t: Track, tracks: Track[]): boolean {
@@ -107,8 +107,55 @@ export function audible(t: Track, tracks: Track[]): boolean {
   return solo ? t.solo : !t.muted
 }
 
+/** The part on top of a track (its playing attempt), for things that want just one. */
 export function activeTake(t: Track): Take | undefined {
-  return t.takes.find(k => k.id === t.take_id)
+  return playingTakes(t).at(-1)
+}
+
+/** Every part of a track — the attempt that plays for each — bottom layer first. */
+export function playingTakes(t: Track): Take[] {
+  return t.takes.filter(k => k.plays).sort((a, b) => a.layer - b.layer || a.id - b.id)
+}
+
+/** A part's attempts, oldest first. */
+export function attemptsOf(t: Track, part: number): Take[] {
+  return t.takes.filter(k => k.part === part).sort((a, b) => a.number - b.number)
+}
+
+const takeLen = (k: Take) => buffers.get(k.id)?.duration ?? k.duration_ms / 1000
+
+/** What a track is heard playing, in seconds of the song: each part's stretch, minus where a higher part covers it. */
+export function segments(t: Track): { take: Take; a: number; b: number }[] {
+  const covered: [number, number][] = []
+  const out: { take: Take; a: number; b: number }[] = []
+  for (const k of [...playingTakes(t)].reverse()) {
+    const s0 = k.offset_ms / 1000, e0 = s0 + takeLen(k)
+    let pieces: [number, number][] = [[s0, e0]]
+    for (const [cs, ce] of covered) {
+      pieces = pieces.flatMap(([a, b]): [number, number][] => b <= cs || a >= ce ? [[a, b]] : [...(a < cs ? [[a, cs] as [number, number]] : []), ...(b > ce ? [[ce, b] as [number, number]] : [])])
+    }
+    for (const [a, b] of pieces) if (b - a > 0.001) out.push({ take: k, a, b })
+    covered.push([s0, e0])
+  }
+  return out.sort((x, y) => x.a - y.a)
+}
+
+/** Starts a track's parts on a context: song time `from` is ctx time `at`, up to song time `until`. */
+function startSegments(ctx: BaseAudioContext, t: Track, out: AudioNode, at: number, from: number, until = Infinity): AudioBufferSourceNode[] {
+  const srcs: AudioBufferSourceNode[] = []
+  for (const g of segments(t)) {
+    const buf = buffers.get(g.take.id)
+    if (!buf) continue
+    const a = Math.max(g.a, from), b = Math.min(g.b, until)
+    if (b - a <= 0.001) continue
+    const src = ctx.createBufferSource()
+    src.buffer = buf
+    src.connect(out)
+    const into = a - g.take.offset_ms / 1000
+    src.start(at + (a - from), Math.max(0, into), b - a)
+    srcs.push(src)
+  }
+  return srcs
 }
 
 /** Plays the song from a point, with the click; reports where it is. */
@@ -148,22 +195,15 @@ export class Player {
     this.opts = opts
     this.playing = true
     for (const t of tracks) {
-      const k = activeTake(t)
-      const buf = k && buffers.get(k.id)
-      if (!k || !buf) continue
-      const off = k.offset_ms / 1000
-      const src = this.ctx.createBufferSource()
-      src.buffer = buf
+      if (!t.takes.some(k => k.plays && buffers.has(k.id))) continue
       const gain = this.ctx.createGain()
       const pan = this.ctx.createStereoPanner()
       const meter = this.ctx.createAnalyser()
       meter.fftSize = 1024
-      src.connect(gain).connect(pan).connect(this.master)
+      gain.connect(pan).connect(this.master)
       pan.connect(meter)
-      this.voices.push({ src, gain, pan, meter, trackId: t.id })
-      if (from < off) src.start(this.t0 + (off - from), 0)
-      else if (from - off < buf.duration) src.start(this.t0, from - off)
-      else continue
+      const srcs = startSegments(this.ctx, t, gain, this.t0, from)
+      this.voices.push({ srcs, gain, pan, meter, trackId: t.id })
     }
     this.mixer(tracks)
     // the click: scheduled a little ahead, on the song's own beat grid
@@ -216,7 +256,10 @@ export class Player {
     if (keepPosition && this.playing) this.from = this.position()
     this.playing = false
     window.clearInterval(this.clickTimer)
-    for (const v of this.voices) { try { v.src.stop() } catch { /* not started */ } v.src.disconnect(); v.pan.disconnect(); v.meter.disconnect() }
+    for (const v of this.voices) {
+      for (const src of v.srcs) { try { src.stop() } catch { /* not started */ } src.disconnect() }
+      v.gain.disconnect(); v.pan.disconnect(); v.meter.disconnect()
+    }
     this.voices = []
   }
 
@@ -534,30 +577,21 @@ export async function uploadAudio(url: string, file: Blob, name: string, meta: R
 export async function mixDown(song: Song, tracks: Track[], range?: { a: number; b: number }): Promise<{ wav: Blob; channels: Float32Array[]; rate: number; ms: number; used: number }> {
   const rate = 44100
   const from = range ? range.a : 0
-  let heard = tracks.filter(t => audible(t, tracks) && activeTake(t))
-  for (const t of heard) await loadTake(activeTake(t)!.id)
-  if (range) heard = heard.filter(t => { const k = activeTake(t)!, off = k.offset_ms / 1000; return off < range.b && off + buffers.get(k.id)!.duration > range.a })
+  let heard = tracks.filter(t => audible(t, tracks) && t.takes.some(k => k.plays))
+  for (const t of heard) for (const k of playingTakes(t)) await loadTake(k.id)
+  if (range) heard = heard.filter(t => segments(t).some(g => g.a < range.b && g.b > range.a))
   let end = 0
-  for (const t of heard) {
-    const k = activeTake(t)!
-    const b = buffers.get(k.id)!
-    end = Math.max(end, k.offset_ms / 1000 + b.duration)
-  }
+  for (const t of heard) for (const g of segments(t)) end = Math.max(end, g.b)
   if (end <= 0) throw new Error(range ? 'Nothing is heard in this part' : 'Nothing to mix: record something first (or unmute a track)')
   const OC = window.OfflineAudioContext || (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext }).webkitOfflineAudioContext
   const oc = new OC(2, Math.max(1, Math.ceil(range ? (range.b - range.a) * rate : (end + 0.2) * rate)), rate)
   for (const t of heard) {
-    const k = activeTake(t)!
-    const src = oc.createBufferSource()
-    src.buffer = buffers.get(k.id)!
     const g = oc.createGain()
     g.gain.value = t.volume / 100
     const p = oc.createStereoPanner()
     p.pan.value = t.pan / 100
-    src.connect(g).connect(p).connect(oc.destination)
-    const off = k.offset_ms / 1000 - from
-    if (off >= 0) src.start(off, 0)
-    else src.start(0, -off)
+    g.connect(p).connect(oc.destination)
+    startSegments(oc, t, g, 0, from, range ? range.b : Infinity)
   }
   const out = await oc.startRendering()
   const chans = bufferChannels(out)
@@ -566,6 +600,22 @@ export async function mixDown(song: Song, tracks: Track[], range?: { a: number; 
   if (peak > 0.98) { const f = 0.98 / peak; for (const c of chans) for (let i = 0; i < c.length; i++) c[i] *= f }
   void song
   return { wav: encodeWav(chans, rate), channels: chans, rate, ms: Math.round(out.duration * 1000), used: heard.length }
+}
+
+/** One track's parts as heard between a and b (seconds of the song), as one recording: for cutting a song to a part.
+ * `at` is where the sound starts (seconds into the song); null when the track is silent there. */
+export async function renderTrack(t: Track, range: { a: number; b: number }): Promise<{ channels: Float32Array[]; rate: number; at: number } | null> {
+  for (const k of playingTakes(t)) await loadTake(k.id)
+  const segs = segments(t).filter(g => g.a < range.b && g.b > range.a)
+  if (!segs.length) return null
+  const a = Math.max(range.a, segs[0].a), b = Math.min(range.b, Math.max(...segs.map(g => g.b)))
+  const first = buffers.get(segs[0].take.id)!
+  const rate = first.sampleRate, chans = Math.max(...segs.map(g => buffers.get(g.take.id)!.numberOfChannels))
+  const OC = window.OfflineAudioContext || (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext }).webkitOfflineAudioContext
+  const oc = new OC(chans, Math.max(1, Math.ceil((b - a) * rate)), rate)
+  startSegments(oc, t, oc.destination, 0, a, b)
+  const out = await oc.startRendering()
+  return { channels: bufferChannels(out), rate, at: a }
 }
 
 /** Seconds as 1:05.3 (or 1:05 when `tenths` is false). */

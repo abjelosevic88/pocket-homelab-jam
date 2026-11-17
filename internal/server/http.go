@@ -92,6 +92,7 @@ func (s *Server) Router() http.Handler {
 				r.Put("/marks/{id}", s.handleUpdateMark)
 				r.Delete("/marks/{id}", s.handleDeleteMark)
 				r.Put("/takes/{id}", s.handleUpdateTake)
+				r.Put("/parts/{id}", s.handleMovePart)
 				r.Delete("/takes/{id}", s.handleDeleteTake)
 
 				// bands: folders for songs

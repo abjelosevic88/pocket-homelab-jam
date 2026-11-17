@@ -159,6 +159,9 @@ type Take struct {
 	Size       int64  `json:"size"`
 	DurationMS int64  `json:"duration_ms"`
 	OffsetMS   int64  `json:"offset_ms"`
+	Part       int64  `json:"part"`  // the part it belongs to (the id of the part's first take)
+	Plays      bool   `json:"plays"` // the attempt that plays for its part
+	Layer      int    `json:"layer"` // higher is heard where parts overlap
 	LatencyMS  int64  `json:"latency_ms"`
 	SampleRate int    `json:"sample_rate"`
 	Channels   int    `json:"channels"`

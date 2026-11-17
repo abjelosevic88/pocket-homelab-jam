@@ -13,9 +13,10 @@ Everything is under `/api/v1`, JSON unless said otherwise. Sign in with the sess
 | `PUT /songs/ID/order` | `{ids: [track ids]}` |
 | `POST /songs/ID/tracks` | `{name, instrument: voice\|guitar\|bass\|keys\|drums\|strings\|wind\|backing\|other, color, volume, pan}` |
 | `PUT /tracks/ID` · `DELETE /tracks/ID` | `{name, instrument, color, volume 0..150, pan -100..100, muted, solo, position, take_id}` |
-| `POST /tracks/ID/takes` | Multipart: `meta` (JSON `{duration_ms, offset_ms, latency_ms, sample_rate, channels, peaks, source, source_ref, device, note}`) + `file` (WAV, MP3, M4A, AAC, FLAC, OGG, WebM). It becomes the take that plays |
+| `POST /tracks/ID/takes` | Multipart: `meta` (JSON `{duration_ms, offset_ms, latency_ms, sample_rate, channels, peaks, source, source_ref, device, note, part, part_id}`) + `file` (WAV, MP3, M4A, AAC, FLAC, OGG, WebM). A track holds several **parts**, all heard (the higher `layer` where two overlap); a part is a group of takes of which one `plays`. `part`: `auto` (default for recordings: over most of a part, another take of it; else a part of its own), `new` (default for files), `only` (a part of its own; every other take on the track becomes an older take of it), `join` (another take of part `part_id`). The new take plays, on top |
 | `GET /takes/ID/audio` | The audio, with ranges (`?download=1` to save) |
-| `PUT /takes/ID` · `DELETE /takes/ID` | `{offset_ms, note, liked}` |
+| `PUT /takes/ID` · `DELETE /takes/ID` | `{offset_ms, note, liked, plays}` — `offset_ms` lines up this take alone; `plays: true` picks it for its part; `track_id` moves its whole part (older clients). Deleting the take that plays: the newest other take of the part plays; the last one: the part is gone |
+| `PUT /parts/PART` | Move a part (every take of it): `{shift_ms, track_id, layer}` — later/earlier, onto another track of the song, at a layer (default: on top). Returns `{takes}`. `tracks.take_id` stays the playing take of a track's top part, for older clients |
 | `GET /songs/ID/stems.zip` | Each track's playing take plus `song.json` (tempo, key, where each file starts, volume, balance) |
 
 `peaks` is the waveform: base64 bytes, the loudest sample in each 1/50 s scaled 0..255. `offset_ms` is where the take starts in the song (negative: the take starts before the song).
