@@ -99,7 +99,7 @@ export function decode(ctx: BaseAudioContext, data: ArrayBuffer): Promise<AudioB
 
 export interface PlayOpts { click: boolean; countInFrom?: number; tempo: number; beats: number; clickSound: string; clickVolume: number }
 
-interface Voice { src: AudioBufferSourceNode; gain: GainNode; pan: StereoPannerNode; trackId: number }
+interface Voice { src: AudioBufferSourceNode; gain: GainNode; pan: StereoPannerNode; meter: AnalyserNode; trackId: number }
 
 /** Is a track heard? Solo wins over everything; muted never. */
 export function audible(t: Track, tracks: Track[]): boolean {
@@ -156,8 +156,11 @@ export class Player {
       src.buffer = buf
       const gain = this.ctx.createGain()
       const pan = this.ctx.createStereoPanner()
+      const meter = this.ctx.createAnalyser()
+      meter.fftSize = 1024
       src.connect(gain).connect(pan).connect(this.master)
-      this.voices.push({ src, gain, pan, trackId: t.id })
+      pan.connect(meter)
+      this.voices.push({ src, gain, pan, meter, trackId: t.id })
       if (from < off) src.start(this.t0 + (off - from), 0)
       else if (from - off < buf.duration) src.start(this.t0, from - off)
       else continue
@@ -194,11 +197,26 @@ export class Player {
     }
   }
 
+  /** How loud each track is right now, after its fader (peak, 0..1+), for the mixer's meters. */
+  levels(): Map<number, number> {
+    const out = new Map<number, number>()
+    if (!this.playing) return out
+    for (const v of this.voices) {
+      const d = this.meterBuf && this.meterBuf.length === v.meter.fftSize ? this.meterBuf : (this.meterBuf = new Float32Array(v.meter.fftSize))
+      v.meter.getFloatTimeDomainData(d)
+      let peak = 0
+      for (let i = 0; i < d.length; i++) { const a = Math.abs(d[i]); if (a > peak) peak = a }
+      out.set(v.trackId, Math.max(out.get(v.trackId) || 0, peak))
+    }
+    return out
+  }
+  private meterBuf: Float32Array<ArrayBuffer> | null = null
+
   stop(keepPosition = true) {
     if (keepPosition && this.playing) this.from = this.position()
     this.playing = false
     window.clearInterval(this.clickTimer)
-    for (const v of this.voices) { try { v.src.stop() } catch { /* not started */ } v.src.disconnect() }
+    for (const v of this.voices) { try { v.src.stop() } catch { /* not started */ } v.src.disconnect(); v.pan.disconnect(); v.meter.disconnect() }
     this.voices = []
   }
 

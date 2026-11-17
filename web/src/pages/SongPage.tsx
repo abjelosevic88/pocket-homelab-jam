@@ -285,6 +285,7 @@ function SongPage() {
     else if (e.key === 'r') { e.preventDefault(); if (rec === 'rolling') stop(); else void record() }
     else if (e.key === 'Home' || e.key === '0') { e.preventDefault(); toStart() }
     else if (e.key === 'c' && song) { e.preventDefault(); saveSong({ click: !song.click }) }
+    else if (e.key === 'x' && tracks.length) { e.preventDefault(); toggleMixer() }
     else if (e.key === 'm' && song && !markEdit) { e.preventDefault(); noteAtPlayhead() }
   }
   useEffect(() => { const h = (e: KeyboardEvent) => keys.current(e); window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h) }, [])
@@ -359,6 +360,28 @@ function SongPage() {
       ...selectItems(),
     ]
   }
+
+  // ---- the mixer: a fader, balance, mute and solo per track, heard at once, saved a moment after you stop moving ----
+  const [mixerOpen, setMixerOpen] = useState(() => localStorage.getItem('pjam-mixer') === '1')
+  const toggleMixer = () => setMixerOpen(v => { localStorage.setItem('pjam-mixer', v ? '0' : '1'); return !v })
+  const pending = useRef<Record<number, { timer: number; patch: Partial<Track> }>>({})
+  const liveTrack = (t: Track, patch: Partial<Track>) => {
+    setSong(s => s && { ...s, tracks: s.tracks!.map(x => x.id === t.id ? { ...x, ...patch } : x) })
+    const cur = pending.current[t.id]
+    if (cur) window.clearTimeout(cur.timer)
+    const merged = { ...(cur?.patch || {}), ...patch }
+    pending.current[t.id] = { patch: merged, timer: window.setTimeout(() => {
+      delete pending.current[t.id]
+      api.put(`${V1}/tracks/${t.id}`, merged).catch(e => { toast(errMsg(e), 'err'); load() })
+    }, 300) }
+  }
+  useEffect(() => () => {
+    // leaving with a fader just moved: still save it
+    for (const [id, p] of Object.entries(pending.current)) {
+      window.clearTimeout(p.timer)
+      fetch(`${V1}/tracks/${id}`, { method: 'PUT', keepalive: true, credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p.patch) }).catch(() => {})
+    }
+  }, [])
 
   const saveTrack = async (t: Track, patch: Partial<Track>) => {
     setSong(s => s && { ...s, tracks: s.tracks!.map(x => x.id === t.id ? { ...x, ...patch } : x) })
@@ -635,6 +658,7 @@ function SongPage() {
       <div className="tl-wrap">
         <div className="tl-zoom">
           {lost && <button type="button" className="btn ghost sm tl-follow" title="Back to the playhead" onClick={() => followNow.current()}><Icon name="target" size={14} />Follow</button>}
+          {tracks.length > 0 && <button type="button" className={`btn ghost sm ${mixerOpen ? 'active' : ''}`} aria-pressed={mixerOpen} title="Each track's volume, balance, mute and solo (X)" onClick={toggleMixer}><Icon name="mixer" size={14} />Mixer</button>}
           <button type="button" className="btn ghost icon-only sm" title="Zoom out" aria-label="Zoom out" onClick={() => setPx(p => Math.max(6, (p || 40) / 1.5))}><Icon name="minus" size={15} /></button>
           <button type="button" className="btn ghost icon-only sm" title="Zoom in" aria-label="Zoom in" onClick={() => setPx(p => Math.min(400, (p || 40) * 1.5))}><Icon name="plus" size={15} /></button>
         </div>
@@ -671,6 +695,8 @@ function SongPage() {
           </div>
         </div>
       </div>
+
+      {mixerOpen && tracks.length > 0 && <MixerPanel tracks={tracks} player={player} playing={playing} onChange={liveTrack} onOpen={id => setSheet(id)} onClose={toggleMixer} />}
 
       {!tracks.length && <div className="studio-first">
         <Icon name="mic" size={22} />
@@ -785,6 +811,73 @@ function TrackRow({ t, tracks, headW, laneW, px, armed, recording, loading, drag
         </div>}
         {!k && !recording && <span className="lane-hint">{armed ? 'Press record' : 'Empty'}</span>}
         {children}
+      </div>
+    </div>
+  )
+}
+
+/** Every track side by side: a fader (0–150 %, 100 = as recorded; double-click for 100), a level meter while it plays,
+ * balance (double-click for the middle), mute and solo. */
+function MixerPanel({ tracks, player, playing, onChange, onOpen, onClose }: {
+  tracks: Track[]; player: React.MutableRefObject<Player | null>; playing: boolean
+  onChange: (t: Track, p: Partial<Track>) => void; onOpen: (id: number) => void; onClose: () => void
+}) {
+  const meters = useRef<Record<number, HTMLDivElement | null>>({})
+  useEffect(() => {
+    const zero = () => { for (const el of Object.values(meters.current)) if (el) el.style.transform = 'scaleY(0)' }
+    if (!playing) { zero(); return }
+    const shown: Record<number, number> = {}
+    let raf = 0
+    const frame = () => {
+      const lv = player.current?.levels() || new Map<number, number>()
+      for (const [id, el] of Object.entries(meters.current)) {
+        if (!el) continue
+        const peak = lv.get(Number(id)) || 0
+        const db = peak > 0 ? 20 * Math.log10(peak) : -60
+        const h = Math.max(0, Math.min(1, (db + 60) / 60))
+        const prev = shown[Number(id)] || 0
+        const v = h > prev ? h : prev * 0.92 // up at once, down slowly
+        shown[Number(id)] = v
+        el.style.transform = `scaleY(${v})`
+        el.classList.toggle('hot', peak >= 0.99)
+      }
+      raf = requestAnimationFrame(frame)
+    }
+    raf = requestAnimationFrame(frame)
+    return () => { cancelAnimationFrame(raf); zero() }
+  }, [playing, player])
+  return (
+    <div className="mixer">
+      <div className="mixer-head">
+        <b><Icon name="mixer" size={14} /> Mixer</b>
+        <span className="muted small">100 % is as recorded · double-click a fader for 100 %</span>
+        <button type="button" className="btn ghost icon-only sm" title="Hide the mixer (X)" aria-label="Hide the mixer" onClick={onClose}><Icon name="x" size={15} /></button>
+      </div>
+      <div className="mixer-strips">
+        {tracks.map(t => {
+          const heard = audible(t, tracks)
+          return (
+            <div key={t.id} className={`strip ${heard ? '' : 'quiet'}`} style={{ ['--trk' as string]: colorOf(t) }}>
+              <button type="button" className="strip-name" onClick={() => onOpen(t.id)} title={`${t.name}: takes and more`}>
+                <span className="trk-ico"><Icon name={instrumentOf(t.instrument).icon} size={13} /></span><span className="ellipsis">{t.name}</span>
+              </button>
+              <div className="strip-fader">
+                <div className="strip-meter" aria-hidden="true"><div ref={el => { meters.current[t.id] = el }} /></div>
+                <input type="range" className="vfader" min={0} max={150} step={1} value={t.volume} aria-label={`${t.name} volume`}
+                  onChange={e => onChange(t, { volume: Number(e.target.value) })} onDoubleClick={() => onChange(t, { volume: 100 })} />
+              </div>
+              <span className={`strip-vol ${t.volume === 0 ? 'muted' : ''}`}>{t.volume}%</span>
+              <input type="range" className="strip-pan" min={-100} max={100} step={5} value={t.pan} aria-label={`${t.name} balance`}
+                title={t.pan === 0 ? 'Balance: middle (double-click for the middle)' : `Balance: ${Math.abs(t.pan)}% ${t.pan < 0 ? 'left' : 'right'}`}
+                onChange={e => onChange(t, { pan: Number(e.target.value) })} onDoubleClick={() => onChange(t, { pan: 0 })} />
+              <span className="muted strip-pan-val">{t.pan === 0 ? 'C' : t.pan < 0 ? `L${-t.pan}` : `R${t.pan}`}</span>
+              <div className="trk-btns">
+                <button type="button" className={`trk-btn ${t.muted ? 'on mute' : ''}`} onClick={() => onChange(t, { muted: !t.muted })} title={t.muted ? 'Unmute' : 'Mute'} aria-pressed={t.muted}>M</button>
+                <button type="button" className={`trk-btn ${t.solo ? 'on solo' : ''}`} onClick={() => onChange(t, { solo: !t.solo })} title={t.solo ? 'Stop soloing' : 'Solo: hear only this'} aria-pressed={t.solo}>S</button>
+              </div>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
