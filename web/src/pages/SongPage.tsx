@@ -277,7 +277,9 @@ function SongPage() {
   const keys = useRef<(e: KeyboardEvent) => void>(() => {})
   keys.current = (e: KeyboardEvent) => {
     const t = e.target as HTMLElement
-    if (t.closest('input, textarea, [contenteditable="true"]') || document.querySelector('.modal-backdrop, .menu, .sel-pop') || e.metaKey || e.ctrlKey || e.altKey) return
+    if (t.closest('input, textarea, [contenteditable="true"]') || document.querySelector('.modal-backdrop, .menu, .sel-pop')) return
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undoLast(); return }
+    if (e.metaKey || e.ctrlKey || e.altKey) return
     if (e.key === 'Escape' && sel) { e.preventDefault(); setSel(null); return }
     if (e.key === ' ') { e.preventDefault(); if (playing || rec === 'rolling') stop(); else play() }
     else if (e.key === 'r') { e.preventDefault(); if (rec === 'rolling') stop(); else void record() }
@@ -399,6 +401,15 @@ function SongPage() {
 
   // ---- moving a part: drag a take left/right (whole beats; Alt for free) and up/down to another track (or the empty row for a new one) ----
   const [clip, setClip] = useState<null | { take: Take; from: number; dx: number; dy: number; to: number | 'new' }>(null)
+  // dropped on a track that already plays a part: ask (a track plays one part; the other would only stay in its takes)
+  const [dropAsk, setDropAsk] = useState<null | { x: number; y: number; take: Take; from: Track; offset: number; to: Track }>(null)
+  // what Ctrl/⌘+Z takes back: the moves made on this page, newest last
+  const undos = useRef<{ run: () => Promise<void>; done: boolean }[]>([])
+  const undoLast = () => {
+    const u = undos.current.pop()
+    if (!u) { toast('Nothing to undo', 'ok'); return }
+    void u.run()
+  }
   const playingRef = useRef(playing)
   playingRef.current = playing
   const startClip = (e: React.PointerEvent<HTMLElement>, t: Track, k: Take) => {
@@ -442,7 +453,7 @@ function SongPage() {
       window.removeEventListener('keydown', key)
       window.removeEventListener('keyup', key)
     }
-    const up = () => {
+    const up = (ev: PointerEvent) => {
       done()
       setClip(null)
       if (!moved || !last) return
@@ -450,7 +461,10 @@ function SongPage() {
       const eat = (ev: Event) => { ev.preventDefault(); ev.stopPropagation() }
       window.addEventListener('click', eat, { capture: true, once: true })
       window.setTimeout(() => window.removeEventListener('click', eat, { capture: true }), 300)
-      if (last.dx !== 0 || last.to !== t.id) void moveTake(k, t, Math.round(k.offset_ms + last.dx * 1000), last.to)
+      const offset = Math.round(k.offset_ms + last.dx * 1000)
+      const dest = typeof last.to === 'number' && last.to !== t.id ? tracksRef.current.find(x => x.id === last!.to) : undefined
+      if (dest && activeTake(dest)) { setDropAsk({ x: ev.clientX, y: ev.clientY, take: k, from: t, offset, to: dest }); return }
+      if (last.dx !== 0 || last.to !== t.id) void moveTake(k, t, offset, last.to)
     }
     const cancel = () => { done(); setClip(null) }
     window.addEventListener('pointermove', move)
@@ -474,7 +488,10 @@ function SongPage() {
       announceChange()
       const made = to === 'new' ? target : null
       const where = target && target.id !== from.id ? `to ${made ? 'a new track' : target.name}` : `to ${clock(offset / 1000)}`
-      toast(`Moved ${where}`, 'ok', { label: 'Undo', run: async () => {
+      const entry = { done: false, run: async () => {
+        if (entry.done) return
+        entry.done = true
+        undos.current = undos.current.filter(x => x !== entry)
         try {
           await api.put(`${V1}/takes/${k.id}`, { offset_ms: k.offset_ms, track_id: from.id })
           if (from.take_id && from.take_id !== k.id) await api.put(`${V1}/tracks/${from.id}`, { take_id: from.take_id })
@@ -483,8 +500,12 @@ function SongPage() {
           const back = await api.get<Song>(`${V1}/songs/${sid}`)
           setSong(back)
           restart(back.tracks || [])
+          announceChange()
+          toast('Move undone', 'ok')
         } catch (e) { toast(errMsg(e), 'err') }
-      } })
+      } }
+      undos.current.push(entry)
+      toast(`Moved ${where} · ${navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl'}+Z undoes`, 'ok', { label: 'Undo', run: entry.run })
     } catch (e) { toast(errMsg(e), 'err'); load() }
   }
   function selectItems(): MenuItem[] {
@@ -630,7 +651,7 @@ function SongPage() {
             {tracks.map(t => (
               <TrackRow key={t.id} t={t} tracks={tracks} headW={headW} laneW={laneW} px={px} armed={armed === t.id} recording={rec === 'rolling' && armed === t.id}
                 drag={clip && clip.from === t.id ? clip : null} drop={!!clip && clip.to === t.id && clip.from !== t.id} onTakeDown={startClip}
-                dragTip={clip && clip.from === t.id ? `${clock(Math.max(0, clip.take.offset_ms / 1000 + clip.dx))} · bar ${barBeat(Math.max(0, clip.take.offset_ms / 1000 + clip.dx), song.tempo, song.beats)}${clip.to !== t.id ? ` → ${clip.to === 'new' ? 'new track' : tracks.find(x => x.id === clip.to)?.name || ''}` : ''}` : ''}
+                dragTip={clip && clip.from === t.id ? `${clock(Math.max(0, clip.take.offset_ms / 1000 + clip.dx))} · bar ${barBeat(Math.max(0, clip.take.offset_ms / 1000 + clip.dx), song.tempo, song.beats)}${clip.to !== t.id ? ` → ${clip.to === 'new' ? 'new track' : (() => { const d = tracks.find(x => x.id === clip.to); return d ? `${d.name}${activeTake(d) ? ' (has a part)' : ''}` : '' })()}` : ''}` : ''}
                 loading={!!activeTake(t) && !ready[activeTake(t)!.id]} onArm={() => !busy && setArmed(armed === t.id ? null : t.id)} onOpen={() => setSheet(t.id)}
                 onMute={() => saveTrack(t, { muted: !t.muted })} onSolo={() => saveTrack(t, { solo: !t.solo })} onSeek={seek} {...laneEvents(t)}>
                 {marks.filter(m => m.track_id === t.id).map(m => <MarkFlag key={m.id} m={m} px={px} color={colorOfMark(m)} onOpen={openMark} onChange={changeMark} onDelete={removeMark} />)}
@@ -680,10 +701,17 @@ function SongPage() {
         <NotesBox key={song.id} value={song.notes} onSave={v => saveSong({ notes: v })} />
       </section>
 
-      {sheetTrack && <TrackSheet t={sheetTrack} song={song} onClose={() => setSheet(null)} onSave={p => saveTrack(sheetTrack, p)} onReload={load}
+      {sheetTrack && <TrackSheet t={sheetTrack} song={song} onMove={(take, to) => { setSheet(null); void moveTake(take, sheetTrack, take.offset_ms, to) }} onClose={() => setSheet(null)} onSave={p => saveTrack(sheetTrack, p)} onReload={load}
         onDeleted={() => { setSheet(null); load() }} ready={ready} onReady={kid => setReady(r => ({ ...r, [kid]: true }))} />}
       {adding && <AddTrack intent={adding.intent} onClose={() => setAdding(null)} onAdd={addTrack} songId={sid} onImported={async kid => { setReady(r => ({ ...r, [kid]: true })); await load(); announceChange() }} onRecord={() => { setAdding(null); setTimeout(() => void record(), 50) }} />}
       {ctxMenu && <ContextMenu at={ctxMenu} items={ctxItems(ctxMenu)} onClose={() => setCtxMenu(null)} width={250} />}
+      {dropAsk && <ContextMenu at={dropAsk} onClose={() => setDropAsk(null)} width={290} items={[
+        { heading: `${dropAsk.to.name} already plays a part` },
+        { label: 'Put it on a new track', icon: 'plus', hint: 'both play', onSelect: () => { const d = dropAsk; setDropAsk(null); void moveTake(d.take, d.from, d.offset, 'new') } },
+        { label: `Play it instead on ${dropAsk.to.name}`, icon: 'repeat', hint: 'old one kept in takes', onSelect: () => { const d = dropAsk; setDropAsk(null); void moveTake(d.take, d.from, d.offset, d.to.id) } },
+        'sep',
+        { label: 'Cancel', icon: 'x', onSelect: () => setDropAsk(null) },
+      ]} />}
       {markEdit && <MarkEditor key={markEdit.mark?.id ?? 'new'} anchor={markEdit.anchor} mark={markEdit.mark} draft={markEdit.draft} tracks={tracks} tempo={song.tempo} beats={song.beats}
         onClose={() => setMarkEdit(null)} onSave={v => saveMark(v, markEdit.mark)} onDelete={markEdit.mark ? () => removeMark(markEdit.mark!) : undefined}
         onPlay={sec => { if (playing) seek(sec); else playFrom(sec) }} />}
@@ -927,8 +955,8 @@ function NotesBox({ value, onSave }: { value: string; onSave: (v: string) => voi
 
 // ---- one track: mixer and takes ----
 
-function TrackSheet({ t, song, onClose, onSave, onReload, onDeleted, ready, onReady }: {
-  t: Track; song: Song; onClose: () => void; onSave: (p: Partial<Track>) => void; onReload: () => Promise<void>; onDeleted: () => void
+function TrackSheet({ t, song, onMove, onClose, onSave, onReload, onDeleted, ready, onReady }: {
+  t: Track; song: Song; onMove: (take: Take, to: number | 'new') => void; onClose: () => void; onSave: (p: Partial<Track>) => void; onReload: () => Promise<void>; onDeleted: () => void
   ready: Record<number, boolean>; onReady: (id: number) => void
 }) {
   const { toast } = useToast()
@@ -944,9 +972,6 @@ function TrackSheet({ t, song, onClose, onSave, onReload, onDeleted, ready, onRe
   }
   const nudge = async (take: Take, ms: number) => {
     try { await api.put(`${V1}/takes/${take.id}`, { offset_ms: take.offset_ms + ms }); await onReload() } catch (e) { toast(errMsg(e), 'err') }
-  }
-  const moveTo = async (take: Take, x: Track) => {
-    try { await api.put(`${V1}/takes/${take.id}`, { track_id: x.id }); await onReload(); announceChange(); toast(`Take ${take.number} moved to ${x.name}`, 'ok') } catch (e) { toast(errMsg(e), 'err') }
   }
   const like = async (take: Take) => { try { await api.put(`${V1}/takes/${take.id}`, { liked: !take.liked }); await onReload() } catch (e) { toast(errMsg(e), 'err') } }
   return (
@@ -984,7 +1009,13 @@ function TrackSheet({ t, song, onClose, onSave, onReload, onDeleted, ready, onRe
                 <button type="button" className={`btn ghost icon-only sm ${take.liked ? 'liked' : ''}`} onClick={() => like(take)} title={take.liked ? 'Unmark' : 'Mark as a good one'} aria-label="Good take"><Icon name="heart" size={15} /></button>
                 <MenuButton label="Take" align="right" width={230} items={() => [
                   { label: 'Download', icon: 'download', onSelect: () => { window.location.href = `${V1}/takes/${take.id}/audio?download=1` } },
-                  ...(song.tracks || []).filter(x => x.id !== t.id).map(x => ({ label: `Move to ${x.name}`, icon: instrumentOf(x.instrument).icon, onSelect: () => moveTo(take, x) })),
+                  ...(song.tracks || []).filter(x => x.id !== t.id).map((x): MenuItem => activeTake(x)
+                    ? { label: `Move to ${x.name}`, icon: instrumentOf(x.instrument).icon, submenu: [
+                        { heading: `${x.name} already plays a part` },
+                        { label: `Play it instead on ${x.name}`, icon: 'repeat', onSelect: () => onMove(take, x.id) },
+                      ] }
+                    : { label: `Move to ${x.name}`, icon: instrumentOf(x.instrument).icon, onSelect: () => onMove(take, x.id) }),
+                  { label: 'Move to a new track', icon: 'plus', onSelect: () => onMove(take, 'new') },
                   { label: 'Delete this take', icon: 'trash', danger: true, onSelect: () => setDel(take) },
                 ]}><Icon name="more" size={16} /></MenuButton>
               </li>
