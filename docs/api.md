@@ -60,6 +60,8 @@ A quick recording on its own (a riff, a melody) before there is a song for it. A
 
 ## Other
 
-`GET/PUT /settings`, `GET /apps` (how each connected app is reached), `GET /apps/files?space=&path=`, `GET /apps/files/raw?space=&path=`, `GET /apps/music?q=`, `GET /apps/music/stream/ID`, `GET /export.json` (`?audio=1`: a .zip with the audio), `GET /export.csv` (sittings), `POST /import` (.json or .zip), `GET /backup` (admin), users and tokens.
+`GET/PUT /settings`, `GET /apps` (how each connected app is reached), `GET /apps/files?space=&path=`, `GET /apps/files/raw?space=&path=`, `GET /apps/music?q=`, `GET /apps/music/stream/ID`, `GET /export.json` (`?audio=1`: a .zip with the audio), `GET /export.zip` (the same .zip), `GET /export.csv` (sittings), `POST /import` (.json or .zip; adds only what is not there yet, counts at the top level and under `added`), `GET /backup` (admin), users and tokens.
+
+Pocket Move can copy your songs out and bring them in: `GET /pocket/portable` describes `GET /export.zip`, `GET /export.csv` and `POST /import` under the link scopes `move:export` and `move:import`.
 
 Linked apps (Pocket Core) get `jam:read` (the GETs above, the audio too) and `jam:write` (`POST /songs`, `PUT/DELETE /songs/ID` for songs that app added; `POST /ideas`, and `PUT/DELETE /ideas/ID`, `POST /ideas/ID/song` for ideas that app added).
