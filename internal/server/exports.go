@@ -115,6 +115,18 @@ func (s *Server) handleExportJSON(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(doc)
 }
 
+// handleExportZip is export.json?audio=1 under a name of its own (Pocket Move
+// asks for paths, not queries).
+func (s *Server) handleExportZip(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	doc, err := s.export(ctx, userFrom(ctx))
+	if err != nil {
+		s.fail(w, err, "export")
+		return
+	}
+	s.exportZip(w, r, doc)
+}
+
 // exportZip writes jam.json plus every audio file.
 func (s *Server) exportZip(w http.ResponseWriter, r *http.Request, doc *exportDoc) {
 	ctx := r.Context()
@@ -492,5 +504,9 @@ func (s *Server) importDoc(ctx context.Context, u *store.User, doc *exportDoc, t
 	if len(parts) > 0 {
 		text = "Added " + strings.Join(parts, ", ")
 	}
-	return map[string]any{"added": added, "text": text}, nil
+	out := map[string]any{"added": added, "text": text}
+	for k, v := range added { // at the top level too: what Pocket Move shows
+		out[k] = v
+	}
+	return out, nil
 }

@@ -174,7 +174,6 @@ func orNone(v string) string {
 	return "“" + v + "”"
 }
 
-
 // handleHistory is a song's history, newest first (?before=<id> for older lines).
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

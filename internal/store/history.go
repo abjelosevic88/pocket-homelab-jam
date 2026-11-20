@@ -9,16 +9,16 @@ import (
 
 // SongEvent is one line of a song's history.
 type SongEvent struct {
-	ID     int64  `json:"id"`
-	UserID int64  `json:"-"`
-	SongID int64  `json:"song_id"`
-	At     string `json:"at"`
-	Kind   string `json:"kind"` // song, track, take, part, mix, note, mixer, group
-	Text   string `json:"text"`
-	Key    string `json:"-"` // the same key in a row (a fader moved again) stays one line
-	Old    string `json:"-"` // where that run started
-	Via    string `json:"via"` // the linked app that made the change, if any
-	Undo     string `json:"-"`        // what puts it back (JSON); "" = can't be undone
+	ID       int64  `json:"id"`
+	UserID   int64  `json:"-"`
+	SongID   int64  `json:"song_id"`
+	At       string `json:"at"`
+	Kind     string `json:"kind"` // song, track, take, part, mix, note, mixer, group
+	Text     string `json:"text"`
+	Key      string `json:"-"`         // the same key in a row (a fader moved again) stays one line
+	Old      string `json:"-"`         // where that run started
+	Via      string `json:"via"`       // the linked app that made the change, if any
+	Undo     string `json:"-"`         // what puts it back (JSON); "" = can't be undone
 	UndoneBy int64  `json:"undone_by"` // the line that undid it (-1: undone, nothing was left to change)
 	Ref      int64  `json:"ref"`       // an undo line: the line it undid
 	CanUndo  bool   `json:"can_undo"`
@@ -229,10 +229,10 @@ func (s *Store) SetTakeStates(ctx context.Context, uid, songID int64, states []T
 
 // Snapshot is deleted things as they were, to put back with their own ids.
 type Snapshot struct {
-	Tracks []Track     `json:"tracks,omitempty"`
-	Takes  []SnapTake  `json:"takes,omitempty"`
-	Marks  []Mark      `json:"marks,omitempty"`
-	Mixes  []SnapMix   `json:"mixes,omitempty"`
+	Tracks []Track    `json:"tracks,omitempty"`
+	Takes  []SnapTake `json:"takes,omitempty"`
+	Marks  []Mark     `json:"marks,omitempty"`
+	Mixes  []SnapMix  `json:"mixes,omitempty"`
 }
 
 // SnapTake and SnapMix keep the file too (it is not in their JSON).

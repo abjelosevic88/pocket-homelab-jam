@@ -58,6 +58,7 @@ func (s *Server) Router() http.Handler {
 			r.Post("/mixes/{id}/files", s.handleMixToFiles)
 			r.Post("/import", s.handleImport)
 			r.Get("/export.json", s.handleExportJSON)
+			r.Get("/export.zip", s.handleExportZip)
 		})
 
 		r.Group(func(r chi.Router) {
@@ -145,6 +146,7 @@ func (s *Server) Router() http.Handler {
 
 				r.Get("/backup", s.handleBackup)
 				r.Get("/export.csv", s.handleExportCSV)
+				r.Get(strings.TrimPrefix(core.PortablePath, "/api/v1"), portable.Handler())
 			})
 		})
 	})
