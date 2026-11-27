@@ -327,3 +327,34 @@ func (s *Store) MarksOnTrack(ctx context.Context, uid, trackID int64) ([]Mark, e
 	}
 	return out, rows.Err()
 }
+
+// SongWork is one song made or changed between two moments: how many lines
+// its history got then and when the first came (or when it was made).
+type SongWork struct {
+	SongID  int64
+	Changes int
+	First   string
+}
+
+// SongsWorkedOn lists the songs made or changed between two UTC instants (a
+// day's journal), from their history and the songs' own date, earliest first.
+func (s *Store) SongsWorkedOn(ctx context.Context, uid int64, from, to string) ([]SongWork, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT song_id, SUM(n), MIN(first) FROM (
+			SELECT song_id, COUNT(1) AS n, MIN(at) AS first FROM song_events WHERE user_id = ? AND at >= ? AND at < ? GROUP BY song_id
+			UNION ALL
+			SELECT id, 0, created_at FROM songs WHERE user_id = ? AND created_at >= ? AND created_at < ?
+		) GROUP BY song_id ORDER BY MIN(first), song_id`, uid, from, to, uid, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SongWork{}
+	for rows.Next() {
+		var w SongWork
+		if err := rows.Scan(&w.SongID, &w.Changes, &w.First); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}

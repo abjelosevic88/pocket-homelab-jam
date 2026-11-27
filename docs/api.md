@@ -58,6 +58,16 @@ A quick recording on its own (a riff, a melody) before there is a song for it. A
 
 `GET /home`, `GET /summary` (Homepage, Pocket AI), `GET /day/YYYY-MM-DD` (Pocket Day), `GET /search?q=` (Pocket Search: songs, mixes and ideas).
 
+The same for any Pocket app, in the shape Pocket Core describes (docs/capabilities.md in pocket-homelab-core); each reads only and answers for the person signed in:
+
+| Call | What |
+|---|---|
+| `GET /pocket/search?q=&limit=` | `{items: [{id, title, snippet, kind: "song", date, url: "/songs/ID", score}]}`: your songs by name, artist, key, notes, band or a note on the timeline; the name that is the words first. `snippet`: tracks · length · when last changed. Words with no letter or digit find nothing |
+| `GET /pocket/day/YYYY-MM-DD?tz=` | `{date, summary, items, metrics}`: one item per song made, changed (its history), played or recorded that day (`id: "song:ID"`, `kind: recorded\|practice\|new\|edited`, `minutes` played, `sub`: new song · takes · mixes), time played without a song (`sitting:ID`, `practice`), a mix of a deleted song (`mix:ID`) and each idea recorded (`idea:ID`). Metrics: Played, Takes, Mixes. The day runs in `tz` (else the server's) |
+| `GET /pocket/widget` | `{items: [{id, title, detail, url}], url: "/songs"}`: the five songs worked on last (`detail`: when · tracks); nothing for someone without songs |
+
+Linked apps reach each one only with its own scope: `pocket:search`, `pocket:day`, `pocket:widget` (`jam:read` does not open them).
+
 ## Other
 
 `GET/PUT /settings`, `GET /apps` (how each connected app is reached), `GET /apps/files?space=&path=`, `GET /apps/files/raw?space=&path=`, `GET /apps/music?q=`, `GET /apps/music/stream/ID`, `GET /export.json` (`?audio=1`: a .zip with the audio), `GET /export.zip` (the same .zip), `GET /export.csv` (sittings), `POST /import` (.json or .zip; adds only what is not there yet, counts at the top level and under `added`), `GET /backup` (admin), users and tokens.

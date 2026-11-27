@@ -70,6 +70,14 @@ Through Pocket Core (one sign-in, nothing to paste) or directly with a URL and a
 
 Jam offers `jam:read` and `jam:write` to the rest of the box (Pocket Day, Search, AI), and publishes `jam.song_added`, `take_recorded`, `mix_made`.
 
+Pocket Search, Pocket Day and Pocket Hub find Jam on their own (it sits on Hub's Media shelf):
+
+- **Search** (`!jam`, `!song`): your songs by name, artist and notes, with their tracks, length and when you last changed them.
+- **Day**: each song you made, changed, played or recorded that day, with the minutes played, the takes and the mixes; time played without a song; the ideas you recorded.
+- **Widget**: the songs you worked on last, with when and how many tracks.
+
+Nothing can be kept in Jam from a quick line: a song is made on its page and an idea is a recording.
+
 ## Run it
 
 ```sh

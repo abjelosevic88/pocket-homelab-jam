@@ -199,12 +199,14 @@ func (s *Server) registerWithCore(ctx context.Context) error {
 	m := core.Manifest{
 		Slug: "jam", Name: "Pocket Jam",
 		Description: "Record music on your phone or computer: a song is a set of tracks you record one on top of the other while you listen on headphones to what is already there — guitar, then bass, then voice — with a metronome click and a count-in, the phone's delay taken out so everything lines up, every take kept so you can pick the best one, and each track's volume, balance, mute and solo. Mix it down to one file to download or keep in Pocket Files, or take the tracks to another recording app as a .zip. A tuner and a metronome are built in; backing tracks come from your files or your Pocket Music library, and the time you spend goes to Pocket Guitar or Pocket Time as practice.",
-		Icon:        "/favicon.svg", Version: Version,
+		Icon:        "/favicon.svg", Category: "Media", Version: Version,
 		URL: s.cfg.CoreAppURL, PublicURL: s.cfg.BaseURL, HealthPath: "/healthz", EnvPrefix: "JAM",
 		Publishes: eventTopics,
 		Offers:    linkOffers,
 		Portable:  portable,
 		Uses:      linkUses(),
+
+		Capabilities: capabilities,
 	}
 	if s.cfg.BaseURL != "" {
 		m.OIDC = &core.OIDCRequest{RedirectURIs: []string{s.oidcCallbackURL()}}
